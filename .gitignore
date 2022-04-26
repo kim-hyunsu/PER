@@ -146,3 +146,13 @@ dmypy.json
 *.npz
 *.txt
 *.pdf
+
+.venv
+.vscode
+.vscode/*
+
+wandb
+wandb/
+/wandb
+saved-outputs/
+datasets/
