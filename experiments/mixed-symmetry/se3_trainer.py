@@ -1,5 +1,7 @@
 from email.policy import default
-import sys  # nopep8
+import sys
+
+from experiments.datasets import SyntheticSE3Dataset  # nopep8
 sys.path.append("../trainer/")  # nopep8
 sys.path.append("../")  # nopep8
 import os
@@ -13,14 +15,15 @@ import torch.nn as nn
 import torch
 from datasets import ModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
 from rpp.objax import (MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
-                       MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2)
+                       MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2,
+                       MixedEMLPV2)
 from oil.tuning.args import argupdated_config
 from oil.datasetup.datasets import split_dataset
 from utils import LoaderTo
 from torch.utils.data import DataLoader
-from emlp.nn import MLP, EMLP
+from rpp.objax import MLP, EMLP
 from emlp.groups import SO2eR3, O2eR3, DkeR3, Trivial, SO, SL, O, Embed
-from rpp.groups import Union
+from rpp.groups import Union, SE3, TranslationGroup, RotationGroup
 import wandb
 from functools import partial
 
@@ -50,24 +53,23 @@ def main(args):
     mse_list = []
     for trial in range(args.trials):
         if "soft" in args.network.lower():
-            watermark = "{}_eq{}_wd{}_t{}".format(
-                args.network, args.equiv, args.wd, trial)
+            watermark = "{}_eq{}_wd{}_gt{}_t{}".format(
+                args.network, args.equiv, args.wd, args.gated_wd, trial)
         else:
-            watermark = "{}_eq{}_bs{}_{}".format(
-                args.network, args.equiv_wd, args.basic_wd, trial)
+            watermark = "{}_eq{}_bs{}_gt{}_t{}".format(
+                args.network, args.equiv_wd, args.basic_wd, args.gated_wd, trial)
 
         wandb.init(
-            project="Mixed Symmetry, Inertia",
+            project="Mixed Symmetry, SE(3)",
             name=watermark,
             mode="disabled" if args.logoff else "online"
         )
         wandb.config.update(args)
 
         # Initialize dataset with 1000 examples
-        if args.noise_std == 0:
-            dset = ModifiedInertia(3000)
-        else:
-            dset = RandomlyModifiedInertia(3000, noise_std=args.noise_std)
+        dset = SyntheticSE3Dataset(
+            3000, for_mlp=True if args.network.lower() == "mlp" else False,
+            noisy=args.noisy, noise=args.noise, complex=args.complex)
         split = {'train': -1, 'val': 1000, 'test': 1000}
         datasets = split_dataset(dset, splits=split)
         dataloaders = {k: LoaderTo(DataLoader(v, batch_size=min(bs, len(v)), shuffle=(k == 'train'),
@@ -76,48 +78,65 @@ def main(args):
         validloader = dataloaders['val']
         testloader = dataloaders['test']
 
-        G = dset.symmetry  # O(3)
+        G = dset.symmetry  # SE3()
         if args.network.lower() == "mlp":
+            G = SO(3)  # just for dimension matching
             model = MLP(dset.rep_in, dset.rep_out,
-                        group=G, num_layers=3, ch=args.ch)
+                        group=G, num_layers=3, ch=args.ch,
+                        extend=True)
         elif args.network.lower() == "emlp":
             model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=3, ch=args.ch)
+                         group=G, num_layers=3, ch=args.ch,
+                         extend=True)
+        elif args.network.lower() == "r3emlp":
+            G = RotationGroup(3)
+            model = EMLP(dset.rep_in, dset.rep_out,
+                         group=G, num_layers=3, ch=args.ch,
+                         extend=True)
+        elif args.network.lower() == "t3emlp":
+            G = TranslationGroup(3)
+            model = EMLP(dset.rep_in, dset.rep_out,
+                         group=G, num_layers=3, ch=args.ch,
+                         extend=True)
         elif args.network.lower() == 'mixedemlp':
-            model = MixedEMLP(dset.rep_in, dset.rep_out,
-                              group=G, num_layers=3, ch=args.ch, gnl=args.gatednonlinearity)
-        elif args.network.lower() == 'o2mixedemlp':
-            G = Oxy2
-            model = MixedEMLP(dset.rep_in, dset.rep_out,
-                              group=G, num_layers=3, ch=args.ch)
-        elif args.network.lower() == 'tripleo2mixedemlp':
-            G = Union(Oxy2, Oyz2, Oxz2)
-            model = MixedEMLP(dset.rep_in, dset.rep_out,
-                              group=G, num_layers=3, ch=args.ch)
-        elif args.network.lower() == "o3softemlp":
-            G = (O(3),)
+            G = (SE3(), RotationGroup(3), TranslationGroup(3))
+            model = MixedEMLPV2(dset.rep_in, dset.rep_out,
+                                groups=G, num_layers=3, ch=args.ch,
+                                gnl=args.gatednonlinearity,
+                                extend=True)
+        elif args.network.lower() == 'r3mixedemlp':
+            G = (RotationGroup(3), RotationGroup(3), TranslationGroup(3))
+            model = MixedEMLPV2(dset.rep_in, dset.rep_out,
+                                groups=G, num_layers=3, ch=args.ch,
+                                extend=True)
+        elif args.network.lower() == "r3softemlp":
+            G = (RotationGroup(3),)
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init)
-        elif args.network.lower() == "o2o3softemlp":
-            G = (Oxy2, O(3))
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
+        elif args.network.lower() == "r3t3softemlp":
+            G = (RotationGroup(3), TranslationGroup(3))
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init)
-        elif args.network.lower() == "tripleo2softemlp":
-            G = (Oxy2, Oyz2, Oxz2, O(3))
-            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
-                                  groups=G, num_layers=3, ch=args.ch,
-                                  gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init)
-        elif args.network.lower() == "o2o3softmixedemlp":
-            G = (Oxy2, O(3))
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
+        elif args.network.lower() == "r3t3softmixedemlp":
+            G = (RotationGroup(3), TranslationGroup(3))
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init)
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
+        elif args.network.lower() == "r3se3softmixedemlp":
+            G = (RotationGroup(3), SE3())
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
         else:
             raise Exception()
 
@@ -131,6 +150,7 @@ def main(args):
             rglr1_list = [0 for _ in range(len(equiv_coef))]
             rglr2 = 0
             if "softemlp" in net_name:
+                print("Using", net_name)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -145,20 +165,35 @@ def main(args):
                             ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
             elif "softmixedemlp" in net_name:
+                print("Using", net_name)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
-                    W = lyr.w.value.reshape(-1)
-                    b = lyr.b.value
+                    W = lyr.Pw@lyr.w.value.reshape(-1)
+                    b = lyr.Pb@lyr.b.value
                     Pw_list = lyr.Pw_list
                     Pb_list = lyr.Pb_list
                     for i, (Pw1, Pb1) in enumerate(zip(Pw_list, Pb_list)):
-                        W1 = Pw1@lyr.Pw@W
-                        Wdiff = W-W1
-                        b1 = Pb1@lyr.Pb@b
-                        bdiff = b-b1
-                        rglr1_list[i] += 0.5*(Wdiff*(lyr.Pw@Wdiff)).sum() + \
-                            0.5*(bdiff*(lyr.Pb@bdiff)).sum()
+                        W1 = Pw1@W
+                        b1 = Pb1@b
+                        rglr1_list[i] += 0.5 * \
+                            ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
+                    rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
+            elif "mixedemlp" in net_name:
+                print("Using", net_name)
+                for i, lyr in enumerate(model.network):
+                    if i != len(model.network)-1:
+                        lyr = lyr.linear
+                    W = lyr.Pw@lyr.w_equiv.value.reshape(-1) + \
+                        lyr.w_basic.value.reshape(-1)
+                    b = lyr.Pb@lyr.b.value + lyr.b_basic.value
+                    Pw_list = lyr.Pw_list
+                    Pb_list = lyr.Pb_list
+                    for i, (Pw1, Pb1) in enumerate(zip(Pw_list, Pb_list)):
+                        W1 = Pw1@W
+                        b1 = Pb1@b
+                        rglr1_list[i] += 0.5 * \
+                            ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
 
             return rglr1_list, rglr2
@@ -167,11 +202,13 @@ def main(args):
         @ objax.Function.with_vars(model.vars())
         def mse(x, y):
             yhat = model(x)
+            rglr1_list = [0.]
+            rglr2 = 0.
             if "soft" in args.network.lower():
                 rglr1_list, rglr2 = equiv_regularizer(
                     model, args.network.lower())
 
-            return ((yhat-y)**2).mean(), rglr1_list, rglr2
+            return ((yhat-y)**2).mean(), rglr1_list, rglr2, (yhat, y)
 
         @ objax.Jit
         @ objax.Function.with_vars(model.vars())
@@ -187,6 +224,10 @@ def main(args):
                 for eq, rglr1 in zip(equiv, rglr1_list):
                     rglr += eq*rglr1
                 rglr += args.wd*rglr2
+            elif "mlp" == args.network.lower():
+                basic_l2 = sum((v.value ** 2).sum()
+                               for k, v in model.vars().items() if k.endswith('w'))
+                rglr += basic_wd[0]*basic_l2
             else:
                 basic_l2 = sum((v.value ** 2).sum()
                                for k, v in model.vars().items() if k.endswith('w_basic'))
@@ -253,7 +294,7 @@ def main(args):
             valid_rglr1_list = [0 for _ in range(len(equiv_coef))]
             valid_rglr2 = 0
             for x, y in validloader:
-                l, rglr1_list, rglr2 = mse(jnp.array(x), jnp.array(y))
+                l, rglr1_list, rglr2, pred = mse(jnp.array(x), jnp.array(y))
                 valid_mse += l*x.shape[0]
                 valid_rglr1_list = rglr1_list
                 valid_rglr2 = rglr2
@@ -267,16 +308,16 @@ def main(args):
                 top_mse = valid_mse
                 test_mse = 0
                 for x, y in testloader:
-                    l, _, _ = mse(jnp.array(x), jnp.array(y))
+                    l, _, _, _ = mse(jnp.array(x), jnp.array(y))
                     test_mse += l*x.shape[0]
                 test_mse /= len(testloader.dataset)
                 top_test_mse = test_mse
 
         wandb.finish()
         mse_list.append(top_test_mse)
+        print(f"Trial {trial+1}, Test MSE: {top_test_mse:.3e}")
 
-    print(mse_list)
-    print(f"Test MSE: {np.mean(mse_list)}±{np.std(mse_list)}")
+    print(f"Total Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}")
 
 
 if __name__ == "__main__":
@@ -284,13 +325,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--basic_wd",
         type=str,
-        default="2",
+        default="1",
         help="basic weight decay",
     )
     parser.add_argument(
         "--equiv_wd",
         type=str,
-        default="2e-5",
+        default="1e-5",
         help="equiv weight decay",
     )
     parser.add_argument(
@@ -311,17 +352,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--equiv",
         type=str,
-        default="200"
+        default="0.5"
     )
     parser.add_argument(
         "--wd",
         type=float,
-        default=1e-5
+        default=0
     )
     parser.add_argument(
         "--gated_wd",
         type=float,
-        default=2.  # same with basic_wd
+        default=1  # same with basic_wd
     )
     parser.add_argument(
         "--aug",
@@ -359,6 +400,19 @@ if __name__ == "__main__":
         "--intervals",
         type=str,
         default="0,0"  # asummed two groups
+    )
+    parser.add_argument(
+        "--noisy",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--complex",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--noise",
+        type=float,
+        default=0
     )
     args = parser.parse_args()
 

@@ -7,6 +7,7 @@ from emlp.reps import Scalar, Vector, T
 from torch.utils.data import Dataset
 from oil.utils.utils import export, Named, Expression, FixedNumpySeed
 from emlp.groups import SO, O, Trivial, Lorentz, RubiksCube, Cube, SL
+from rpp.groups import SE3
 from functools import partial
 import itertools
 from jax import vmap, jit
@@ -17,8 +18,10 @@ from objax import Module
 class RandomlyModifiedInertia(Dataset, metaclass=Named):
     def __init__(self, N=1024, k=5, noise_std=0.1, MOG=False):
         super().__init__()
-        self.dim = (1+3)*k
-        self.X = torch.randn(N, self.dim)
+        self.dim = (1+3)
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
         self.X[:, :k] = F.softplus(self.X[:, :k])  # Masses
         mi = self.X[:, :k]
         ri = self.X[:, k:].reshape(-1, k, 3)
@@ -61,7 +64,9 @@ class ModifiedInertia(Dataset, metaclass=Named):
     def __init__(self, N=1024, k=5):
         super().__init__()
         self.dim = (1+3)*k
-        self.X = torch.randn(N, self.dim)
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
         self.X[:, :k] = F.softplus(self.X[:, :k])  # Masses
         mi = self.X[:, :k]
         ri = self.X[:, k:].reshape(-1, k, 3)
@@ -96,7 +101,9 @@ class NoisyModifiedInertia(Dataset):
     def __init__(self, N=1024, k=5, noise_std=0.05):
         super().__init__()
         self.dim = (1+3)*k
-        self.X = torch.randn(N, self.dim)
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
         self.X[:, :k] = F.softplus(self.X[:, :k])  # Masses
         mi = self.X[:, :k]
         ri = self.X[:, k:].reshape(-1, k, 3)
@@ -118,11 +125,11 @@ class NoisyModifiedInertia(Dataset):
         Xmean[k:] = 0
         Xstd = np.zeros_like(Xmean)
         Xstd[:k] = np.abs(self.X[:, :k]).mean(0)  # .std(0)
-        #Xstd[k:] = (np.sqrt((self.X[:,k:].reshape(N,k,3)**2).mean((0,2))[:,None]) + np.zeros((k,3))).reshape(k*3)
+        # Xstd[k:] = (np.sqrt((self.X[:,k:].reshape(N,k,3)**2).mean((0,2))[:,None]) + np.zeros((k,3))).reshape(k*3)
         Xstd[k:] = (np.abs(self.X[:, k:].reshape(N, k, 3)).mean(
             (0, 2))[:, None] + np.zeros((k, 3))).reshape(k*3)
         Ymean = 0*self.Y.mean(0)
-        #Ystd = np.sqrt(((self.Y-Ymean)**2).mean((0,1)))+ np.zeros_like(Ymean)
+        # Ystd = np.sqrt(((self.Y-Ymean)**2).mean((0,1)))+ np.zeros_like(Ymean)
         Ystd = np.abs(self.Y-Ymean).mean((0, 1)) + np.zeros_like(Ymean)
         self.stats = 0, 1, 0, 1  # Xmean,Xstd,Ymean,Ystd
 
@@ -138,7 +145,9 @@ class Inertia(Dataset):
     def __init__(self, N=1024, k=5):
         super().__init__()
         self.dim = (1+3)*k
-        self.X = torch.randn(N, self.dim)
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
         self.X[:, :k] = F.softplus(self.X[:, :k])  # Masses
         mi = self.X[:, :k]
         ri = self.X[:, k:].reshape(-1, k, 3)
@@ -158,11 +167,11 @@ class Inertia(Dataset):
         Xmean[k:] = 0
         Xstd = np.zeros_like(Xmean)
         Xstd[:k] = np.abs(self.X[:, :k]).mean(0)  # .std(0)
-        #Xstd[k:] = (np.sqrt((self.X[:,k:].reshape(N,k,3)**2).mean((0,2))[:,None]) + np.zeros((k,3))).reshape(k*3)
+        # Xstd[k:] = (np.sqrt((self.X[:,k:].reshape(N,k,3)**2).mean((0,2))[:,None]) + np.zeros((k,3))).reshape(k*3)
         Xstd[k:] = (np.abs(self.X[:, k:].reshape(N, k, 3)).mean(
             (0, 2))[:, None] + np.zeros((k, 3))).reshape(k*3)
         Ymean = 0*self.Y.mean(0)
-        #Ystd = np.sqrt(((self.Y-Ymean)**2).mean((0,1)))+ np.zeros_like(Ymean)
+        # Ystd = np.sqrt(((self.Y-Ymean)**2).mean((0,1)))+ np.zeros_like(Ymean)
         Ystd = np.abs(self.Y-Ymean).mean((0, 1)) + np.zeros_like(Ymean)
         self.stats = 0, 1, 0, 1  # Xmean,Xstd,Ymean,Ystd
 
@@ -197,8 +206,61 @@ class GroupAugmentation(Module):
 
 @export
 class SyntheticSE3Dataset(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=3):
+    def __init__(self, N=1024, k=3, for_mlp=False, noisy=False, noise=0, complex=False):
         super().__init__()
-        self.dim = 4*k
-        self.X = torch.randn(N, self.dim)
-        self.X[:, ::4]
+        d = 3
+        self.dim = (d+1)*k
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
+        self.X[:, d::(d+1)] = 1  # every 4th element
+
+        def get_YandErr(_X, noise=0):
+            begin = 0
+            X = []
+            for i in range(k):
+                end = begin + d
+                X.append(_X[:, begin:end])
+                begin = end+1
+            Y = 0
+            for i in range(k-1):
+                Y += (X[i]-X[i+1]).pow(2).sum(1)
+            Y += (X[-1]-X[0]).pow(2).sum(1)
+            Y = Y.unsqueeze(-1)
+            err = 0
+            for i in range(k):
+                err += X[i].pow(2).sum(1)
+            err = err.unsqueeze(-1)
+            if complex:
+                Y1 = torch.tanh(Y)
+                Y2 = torch.sigmoid(Y)
+                Y3 = torch.relu(Y)
+                Y = Y1+Y2-Y3
+                err1 = torch.tanh(err)
+                err2 = torch.sigmoid(err)
+                err3 = torch.relu(err)
+                err = err1+err3-err2
+            Y = Y-noise*err
+            # Y_mean = Y.mean(0).unsqueeze(0)
+            # Y_std = Y.std(0).unsqueeze(0)
+            # Y = (Y-Y_mean)/Y_std
+            return X, Y
+        if noisy:
+            rng = torch.Generator()
+            rng.manual_seed(N+k)
+            noise = noise*torch.rand(N, 1, generator=rng)
+        X, Y = get_YandErr(self.X, noise=noise)
+        if for_mlp:
+            self.X = torch.cat(X, axis=1)
+        self.Y = Y
+        self.rep_in = k*Vector
+        self.rep_out = Scalar
+        self.symmetry = SE3()
+        self.X = self.X.numpy()
+        self.Y = self.Y.numpy()
+
+    def __getitem__(self, i):
+        return (self.X[i], self.Y[i])
+
+    def __len__(self):
+        return self.X.shape[0]

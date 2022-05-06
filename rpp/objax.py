@@ -10,18 +10,203 @@ from objax.module import Module
 import objax
 import jax.numpy as jnp
 import emlp.nn.objax as nn
-from emlp.reps import Rep
+from emlp.reps.representation import Rep, ScalarRep
 from oil.utils.utils import Named, export
 import logging
 import jax
+from rpp.groups import SE3
 
 RPP_SCALE = 1e-3
+logger = logging.getLogger()
+logger.setLevel(logging.WARNING)
+
+
+def extend_dim_mask(repin):
+    mask = jnp.ones(repin.size())
+    value = jnp.zeros(repin.size())
+    begin = 0
+    for rep, count in repin.reps.items():
+        d = rep.G.d
+        for i in range(count):
+            size = rep.size()
+            end = begin+size
+            if size == 1:
+                begin = end
+            elif size == d:
+                mask = mask.at[end-1].set(0)
+                value = value.at[end-1].set(1)
+                begin = end
+            elif size == d*d:
+                temp = jnp.ones((d, d))
+                temp = temp.at[:, -1:].set(0)
+                temp = temp.at[-1:, :].set(0).reshape(-1)
+                temp1 = jnp.zeros((d, d))
+                temp1 = temp1.at[-1, -1].set(1).reshape(-1)
+                mask = mask.at[begin:end].set(temp)
+                value = value.at[begin:end].set(temp1)
+                begin = end
+            else:
+                begin = end
+                raise Exception()
+    return mask, value
+
+
+@export
+class Linear(objax.nn.Linear):
+    """ Basic equivariant Linear layer from repin to repout."""
+
+    def __init__(self, repin, repout, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin)
+        nin, nout = repin.size(), repout.size()
+        super().__init__(nin, nout)
+        self.b = TrainVar(objax.random.uniform((nout,))/jnp.sqrt(nout))
+        self.w = TrainVar(orthogonal((nout, nin)))
+        self.rep_W = rep_W = repout*repin.T
+
+        rep_bias = repout
+        self.Pw = rep_W.equivariant_projector()
+        self.Pb = rep_bias.equivariant_projector()
+
+        self.repin = repin
+        self.repout = repout
+
+    def __call__(self, x):  # (cin) -> (cout)
+        if self.extend:
+            x = x*self.mask.reshape(1, -1) + self.value.reshape(1, -1)
+        # G = SE3()
+        # G_sample = G.sample()
+
+        def model(x):
+            W = (self.Pw@self.w.value.reshape(-1)).reshape(*self.w.value.shape)
+            b = self.Pb@self.b.value
+            out = x@W.T+b
+            return out
+
+        # def rel_err(a, b):
+        #     return jnp.sqrt(((a-b)**2).sum())/(jnp.sqrt((a**2).sum())+jnp.sqrt((b**2).sum()))
+        # if x.shape[-1] > 12:
+        #     out1 = model(self.repin.rho(G_sample)@x[0])
+        #     out2 = self.repout.rho(G_sample)@model(x[0])
+        #     print(rel_err(out1, out2))
+        return model(x)
+
+
+@export
+class EMLPBlock(Module):
+    """ Basic building block of EMLP consisting of G-Linear, biLinear,
+        and gated nonlinearity. """
+
+    def __init__(self, rep_in, rep_out, extend):
+        super().__init__()
+        self.linear = Linear(rep_in, nn.gated(rep_out), extend)
+        self.bilinear = nn.BiLinear(nn.gated(rep_out), nn.gated(rep_out))
+        self.nonlinearity = nn.GatedNonlinearity(rep_out)
+
+    def __call__(self, x):
+        lin = self.linear(x)
+        preact = self.bilinear(lin)+lin
+        return self.nonlinearity(preact)
+
+
+def uniform_rep_general(ch, *rep_types):
+    """ adds all combinations of (powers of) rep_types up to
+        a total size of ch channels. """
+    raise NotImplementedError
+
+
+@export
+class EMLP(Module, metaclass=Named):
+    """ Equivariant MultiLayer Perceptron. 
+        If the input ch argument is an int, uses the hands off uniform_rep heuristic.
+        If the ch argument is a representation, uses this representation for the hidden layers.
+        Individual layer representations can be set explicitly by using a list of ints or a list of
+        representations, rather than use the same for each hidden layer.
+        Args:
+            rep_in (Rep): input representation
+            rep_out (Rep): output representation
+            group (Group): symmetry group
+            ch (int or list[int] or Rep or list[Rep]): number of channels in the hidden layers
+            num_layers (int): number of hidden layers
+        Returns:
+            Module: the EMLP objax module."""
+
+    def __init__(self, rep_in, rep_out, group, ch=384, num_layers=3, extend=False):  # @
+        super().__init__()
+        logging.info("Initing EMLP (objax)")
+        self.rep_in = rep_in(group)
+        self.rep_out = rep_out(group)
+
+        self.G = group
+        # Parse ch as a single int, a sequence of ints, a single Rep, a sequence of Reps
+        if isinstance(ch, int):
+            # [uniform_rep(ch,group) for _ in range(num_layers)]
+            if extend:
+                middle_layers = num_layers * \
+                    [next(uniform_reps(ch, (group,), 2))]
+            else:
+                middle_layers = num_layers*[nn.uniform_rep(ch, group)]
+        elif isinstance(ch, Rep):
+            middle_layers = num_layers*[ch(group)]
+        else:
+            if extend:
+                middle_layers = [(c(group) if isinstance(
+                    c, Rep) else next(uniform_reps(ch, (group,), 2))) for c in ch]
+            else:
+                middle_layers = [(c(group) if isinstance(c, Rep)
+                                  else nn.uniform_rep(c, group)) for c in ch]
+        #assert all((not rep.G is None) for rep in middle_layers[0].reps)
+        reps = [self.rep_in]+middle_layers
+        logging.info(f"Reps: {reps}")
+        self.network = nn.Sequential(
+            *[EMLPBlock(rin, rout, extend)
+              for rin, rout in zip(reps, reps[1:])],
+            Linear(reps[-1], self.rep_out, extend)
+        )
+
+    def __call__(self, x, training=True):
+        return self.network(x)
+
+
+def swish(x):
+    return jax.nn.sigmoid(x)*x
+
+
+def MLPBlock(cin, cout, extend):
+    # ,nn.BatchNorm0D(cout,momentum=.9),swish)#,
+    return nn.Sequential(objax.nn.Linear(cin, cout), swish)
+
+
+@export
+class MLP(Module, metaclass=Named):
+    """ Standard baseline MLP. Representations and group are used for shapes only. """
+
+    def __init__(self, rep_in, rep_out, group, ch=384, num_layers=3, extend=False):
+        super().__init__()
+        self.rep_in = rep_in(group)
+        self.rep_out = rep_out(group)
+        self.G = group
+        chs = [self.rep_in.size()] + num_layers*[ch]
+        cout = self.rep_out.size()
+        logging.info("Initing MLP")
+        self.net = nn.Sequential(
+            *[MLPBlock(cin, cout, extend) for cin, cout in zip(chs, chs[1:])],
+            objax.nn.Linear(chs[-1], cout)
+        )
+
+    def __call__(self, x, training=True):
+        y = self.net(x)
+        return y
 
 
 class MixedLinear(Module):
     """ Basic equivariant Linear layer from repin to repout."""
 
-    def __init__(self, repin, repout):
+    def __init__(self, repin, repout, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin)
         nin, nout = repin.size(), repout.size()
         self.b = TrainVar(objax.random.uniform((nout,))/jnp.sqrt(nout))
         self.w_equiv = TrainVar(orthogonal((nout, nin)))
@@ -34,6 +219,8 @@ class MixedLinear(Module):
         self.Pw = self.rep_W.equivariant_projector()
 
     def __call__(self, x):
+        if self.extend:  # e.g. slice(3, len(x), 4)
+            x = x*self.mask.reshape(1, -1)+self.value.reshape(1, -1)
         W = (self.Pw@self.w_equiv.value.reshape(-1)
              ).reshape(*self.w_equiv.value.shape)
         b = self.Pb@self.b.value
@@ -61,9 +248,9 @@ class MixedEMLPBlock(Module):
     """ Basic building block of EMLP consisting of G-Linear, biLinear,
         and gated nonlinearity. """
 
-    def __init__(self, rep_in, rep_out, gnl):
+    def __init__(self, rep_in, rep_out, gnl, extend):
         super().__init__()
-        self.mixedlinear = MixedLinear(rep_in, nn.gated(rep_out))
+        self.mixedlinear = MixedLinear(rep_in, nn.gated(rep_out), extend)
         self.bilinear = nn.BiLinear(nn.gated(rep_out), nn.gated(rep_out))
         self.nonlinearity = RPPGatedNonlinearity(
             rep_out) if not gnl else nn.GatedNonlinearity(rep_out)
@@ -77,7 +264,7 @@ class MixedEMLPBlock(Module):
 @export
 class MixedEMLP(Module, metaclass=Named):
 
-    def __init__(self, rep_in, rep_out, group, ch=384, num_layers=3, gnl=False):  # @
+    def __init__(self, rep_in, rep_out, group, ch=384, num_layers=3, gnl=False, extend=False):
         super().__init__()
         logging.info("Initing EMLP")
         self.rep_in = rep_in(group)
@@ -87,19 +274,28 @@ class MixedEMLP(Module, metaclass=Named):
         # Parse ch as a single int, a sequence of ints, a single Rep, a sequence of Reps
         if isinstance(ch, int):
             # [uniform_rep(ch,group) for _ in range(num_layers)]
-            middle_layers = num_layers*[nn.uniform_rep(ch, group)]
+            if extend:
+                middle_layers = num_layers * \
+                    [next(uniform_reps(ch, (group,), 2))]
+            else:
+                middle_layers = num_layers*[nn.uniform_rep(ch, group)]
         elif isinstance(ch, Rep):
             middle_layers = num_layers*[ch(group)]
         else:
-            middle_layers = [(c(group) if isinstance(c, Rep)
-                              else nn.uniform_rep(c, group)) for c in ch]
+            if extend:
+                middle_layers = [(c(group) if isinstance(
+                    c, Rep) else next(uniform_reps(ch, (group,), 2))) for c in ch]
+            else:
+                middle_layers = [(c(group) if isinstance(c, Rep)
+                                  else nn.uniform_rep(c, group)) for c in ch]
+
         # assert all((not rep.G is None) for rep in middle_layers[0].reps)
         reps = [self.rep_in]+middle_layers
         # logging.info(f"Reps: {reps}")
         self.network = nn.Sequential(
-            *[MixedEMLPBlock(rin, rout, gnl)
+            *[MixedEMLPBlock(rin, rout, gnl, extend)
               for rin, rout in zip(reps, reps[1:])],
-            MixedLinear(reps[-1], self.rep_out)
+            MixedLinear(reps[-1], self.rep_out, extend)
         )
 
     def __call__(self, S, training=True):
@@ -851,7 +1047,7 @@ class ExtraGroupEMLP(Module, metaclass=Named):
         return self.network(x)
 
 
-def uniform_reps(ch, groups):
+def uniform_reps(ch, groups, maxlim_rank=None):
     """ A heuristic method for allocating a given number of channels (ch)
         into tensor types. Attempts to distribute the channels evenly across
         the different tensor types. Useful for hands off layer construction.
@@ -866,10 +1062,12 @@ def uniform_reps(ch, groups):
         assert groups[0].d == g.d
     d = groups[0].d
     # number of tensors of each rank
-    Ns = np.zeros((nn.lambertW(ch, d)+1,), int)
+    if maxlim_rank is None:
+        maxlim_rank = nn.lambertW(ch, d)
+    Ns = np.zeros((maxlim_rank+1,), int)
     while ch > 0:
         # compute the max rank tensor that can fit up to
-        max_rank = nn.lambertW(ch, d)
+        max_rank = maxlim_rank
         Ns[:max_rank+1] += np.array([d**(max_rank-r)
                                     for r in range(max_rank+1)], dtype=int)
         ch -= (max_rank+1)*d**max_rank  # compute leftover channels
@@ -974,15 +1172,20 @@ class SoftEMLPBlock(Module):
 @export
 class SoftMultiEMLP(Module, metaclass=Named):
 
-    def __init__(self, rep_in, rep_out, groups, ch=384, num_layers=3, gnl=False, rpp_init=False):
+    def __init__(self, rep_in, rep_out, groups,
+                 ch=384, num_layers=3, gnl=False, rpp_init=False, extend=False):
         super().__init__()
         logging.info("Initing SoftMultiEMLP")
         self.rep_in_list = [rep_in(g) for g in groups]
         self.rep_out_list = [rep_out(g) for g in groups]
         self.groups = groups
         if isinstance(ch, int):
-            middle_layers_list = [num_layers*[sum_rep]
-                                  for sum_rep in uniform_reps(ch, groups)]
+            if extend:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups, 2)]
+            else:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups)]
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
@@ -990,8 +1193,12 @@ class SoftMultiEMLP(Module, metaclass=Named):
                 if isinstance(c, Rep):
                     middle_layers_list = [c(g) for g in groups]
                 else:
-                    middle_layers_list = [num_layers*[sum_rep]
-                                          for sum_rep in uniform_reps(c, groups)]
+                    if extend:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups, 2)]
+                    else:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups)]
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]
@@ -1006,9 +1213,10 @@ class SoftMultiEMLP(Module, metaclass=Named):
             rin_list.append(rins)
             rout_list.append(routs)
         self.network = nn.Sequential(
-            *[SoftMultiEMLPBlock(rins, routs, gnl, rpp_init)
+            *[SoftMultiEMLPBlock(rins, routs, gnl, rpp_init, extend)
               for rins, routs in zip(rin_list, rout_list)],
-            SoftMultiGroupLinear(rout_list[-1], self.rep_out_list, rpp_init)
+            SoftMultiGroupLinear(
+                rout_list[-1], self.rep_out_list, rpp_init, extend)
         )
 
     def __call__(self, S, training=True):
@@ -1016,10 +1224,10 @@ class SoftMultiEMLP(Module, metaclass=Named):
 
 
 class SoftMultiEMLPBlock(Module):
-    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init):
+    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init, extend):
         super().__init__()
         self.linear = SoftMultiGroupLinear(
-            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init)
+            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init, extend)
         self.bilinear = nn.BiLinear(
             nn.gated(rep_out_list[0]), nn.gated(rep_out_list[0]))
         self.nonlinearity = RPPGatedNonlinearity(
@@ -1032,7 +1240,10 @@ class SoftMultiEMLPBlock(Module):
 
 
 class SoftMultiGroupLinear(Module):
-    def __init__(self, repin_list, repout_list, rpp_init):
+    def __init__(self, repin_list, repout_list, rpp_init, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin_list[0])
         nin, nout = repin_list[0].size(), repout_list[0].size()
         init_b = objax.random.uniform((nout,))/jnp.sqrt(nout)
         init_w = orthogonal((nout, nin))
@@ -1043,10 +1254,8 @@ class SoftMultiGroupLinear(Module):
         self.Pw_list = []
         self.Pb_list = []
         for rep_W, rep_bias in zip(rep_W_list, rep_bias_list):
-            for rep in rep_W.reps:
-                rep.solcache = {}
-            for rep in rep_bias.reps:
-                rep.solcache = {}
+            rep_W = reset_solcache(rep_W)
+            rep_bias = reset_solcache(rep_bias)
             self.Pw_list.append(rep_W.equivariant_projector())
             self.Pb_list.append(rep_bias.equivariant_projector())
 
@@ -1060,21 +1269,28 @@ class SoftMultiGroupLinear(Module):
         self.w = TrainVar(init_w)
 
     def __call__(self, x):
+        if self.extend:
+            x = x*self.mask.reshape(1, -1) + self.value.reshape(1, -1)
         return x@self.w.value.T + self.b.value
 
 
 @export
 class SoftMixedEMLP(Module, metaclass=Named):
 
-    def __init__(self, rep_in, rep_out, groups, ch=384, num_layers=3, gnl=False, rpp_init=False):
+    def __init__(self, rep_in, rep_out, groups,
+                 ch=384, num_layers=3, gnl=False, rpp_init=False, extend=False):
         super().__init__()
         logging.info("Initing SoftMultiEMLP")
         self.rep_in_list = [rep_in(g) for g in groups]
         self.rep_out_list = [rep_out(g) for g in groups]
         self.groups = groups
         if isinstance(ch, int):
-            middle_layers_list = [num_layers*[sum_rep]
-                                  for sum_rep in uniform_reps(ch, groups)]
+            if extend:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups, 2)]
+            else:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups)]
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
@@ -1082,8 +1298,12 @@ class SoftMixedEMLP(Module, metaclass=Named):
                 if isinstance(c, Rep):
                     middle_layers_list = [c(g) for g in groups]
                 else:
-                    middle_layers_list = [num_layers*[sum_rep]
-                                          for sum_rep in uniform_reps(c, groups)]
+                    if extend:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups, 2)]
+                    else:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups)]
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]
@@ -1098,9 +1318,10 @@ class SoftMixedEMLP(Module, metaclass=Named):
             rin_list.append(rins)
             rout_list.append(routs)
         self.network = nn.Sequential(
-            *[SoftMixedEMLPBlock(rins, routs, gnl, rpp_init)
+            *[SoftMixedEMLPBlock(rins, routs, gnl, rpp_init, extend)
               for rins, routs in zip(rin_list, rout_list)],
-            SoftMixedGroupLinear(rout_list[-1], self.rep_out_list, rpp_init)
+            SoftMixedGroupLinear(
+                rout_list[-1], self.rep_out_list, rpp_init, extend)
         )
 
     def __call__(self, S, training=True):
@@ -1108,10 +1329,10 @@ class SoftMixedEMLP(Module, metaclass=Named):
 
 
 class SoftMixedEMLPBlock(Module):
-    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init):
+    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init, extend):
         super().__init__()
         self.linear = SoftMixedGroupLinear(
-            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init)
+            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init, extend)
         self.bilinear = nn.BiLinear(
             nn.gated(rep_out_list[0]), nn.gated(rep_out_list[0]))
         self.nonlinearity = RPPGatedNonlinearity(
@@ -1123,8 +1344,20 @@ class SoftMixedEMLPBlock(Module):
         return self.nonlinearity(preact)
 
 
+def reset_solcache(reps):
+    if isinstance(reps, ScalarRep):
+        reps.solcache = {}
+    else:
+        for rep in reps.reps:
+            rep.solcache = {}
+    return reps
+
+
 class SoftMixedGroupLinear(Module):
-    def __init__(self, repin_list, repout_list, rpp_init):
+    def __init__(self, repin_list, repout_list, rpp_init, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin_list[0])
         nin, nout = repin_list[0].size(), repout_list[0].size()
         init_b = objax.random.uniform((nout,))/jnp.sqrt(nout)
         init_w = orthogonal((nout, nin))
@@ -1135,10 +1368,8 @@ class SoftMixedGroupLinear(Module):
         self.Pw_list = []
         self.Pb_list = []
         for i, (rep_W, rep_bias) in enumerate(zip(rep_W_list, rep_bias_list)):
-            for rep in rep_W.reps:
-                rep.solcache = {}
-            for rep in rep_bias.reps:
-                rep.solcache = {}
+            rep_W = reset_solcache(rep_W)
+            rep_bias = reset_solcache(rep_bias)
             if i == 0:
                 self.Pw = rep_W.equivariant_projector()
                 self.Pb = rep_bias.equivariant_projector()
@@ -1156,7 +1387,121 @@ class SoftMixedGroupLinear(Module):
         self.w = TrainVar(init_w)
 
     def __call__(self, x):
+        if self.extend:
+            x = x*self.mask.reshape(1, -1) + self.value.reshape(1, -1)
         W = (self.Pw@self.w.value.reshape(-1)).reshape(*self.w.value.shape)
         b = self.Pb@self.b.value
         out = x@W.T + b
         return out
+
+
+class MixedLinearV2(Module):
+    """ Basic equivariant Linear layer from repin to repout."""
+
+    def __init__(self, repin_list, repout_list, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin_list[0])
+        nin, nout = repin_list[0].size(), repout_list[0].size()
+        self.b = TrainVar(objax.random.uniform((nout,))/jnp.sqrt(nout))
+        self.w_equiv = TrainVar(orthogonal((nout, nin)))
+        rep_W_list = [repout << repin for repout,
+                      repin in zip(repout_list, repin_list)]
+        rep_bias_list = repout_list
+        self.Pw_list = []
+        self.Pb_list = []
+        for i, (rep_W, rep_bias) in enumerate(zip(rep_W_list, rep_bias_list)):
+            rep_W = reset_solcache(rep_W)
+            rep_bias = reset_solcache(rep_bias)
+            if i == 0:
+                self.Pw = rep_W.equivariant_projector()
+                self.Pb = rep_bias.equivariant_projector()
+            else:
+                self.Pw_list.append(rep_W.equivariant_projector())
+                self.Pb_list.append(rep_bias.equivariant_projector())
+
+        self.w_basic = TrainVar(self.w_equiv.value*RPP_SCALE)
+        self.b_basic = TrainVar(self.b.value*RPP_SCALE)
+
+    def __call__(self, x):
+        if self.extend:  # e.g. slice(3, len(x), 4)
+            x = x*self.mask.reshape(1, -1)+self.value.reshape(1, -1)
+        W = (self.Pw@self.w_equiv.value.reshape(-1)
+             ).reshape(*self.w_equiv.value.shape)
+        b = self.Pb@self.b.value
+        return x@(W.T + self.w_basic.value.T)+b+self.b_basic.value
+
+
+class MixedEMLPBlockV2(Module):
+    """ Basic building block of EMLP consisting of G-Linear, biLinear,
+        and gated nonlinearity. """
+
+    def __init__(self, rep_in_list, rep_out_list, gnl, extend):
+        super().__init__()
+        self.linear = MixedLinearV2(
+            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], extend)
+        self.bilinear = nn.BiLinear(
+            nn.gated(rep_out_list[0]), nn.gated(rep_out_list[0]))
+        self.nonlinearity = RPPGatedNonlinearity(
+            rep_out_list[0]) if not gnl else nn.GatedNonlinearity(rep_out_list[0])
+
+    def __call__(self, x):
+        lin = self.linear(x)
+        preact = self.bilinear(lin)+lin
+        return self.nonlinearity(preact)
+
+
+@export
+class MixedEMLPV2(Module, metaclass=Named):
+
+    def __init__(self, rep_in, rep_out, groups, ch=384, num_layers=3, gnl=False, extend=False):
+        super().__init__()
+        logging.info("Initing EMLP")
+        self.rep_in_list = [rep_in(g) for g in groups]
+        self.rep_out_list = [rep_out(g) for g in groups]
+
+        self.groups = groups
+        # Parse ch as a single int, a sequence of ints, a single Rep, a sequence of Reps
+        if isinstance(ch, int):
+            # [uniform_rep(ch,group) for _ in range(num_layers)]
+            if extend:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups, 2)]
+            else:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups)]
+        elif isinstance(ch, Rep):
+            middle_layers_list = [num_layers*[ch(g)] for g in groups]
+        else:
+            for c in ch:
+                if isinstance(c, Rep):
+                    middle_layers_list = [c(g) for g in groups]
+                else:
+                    if extend:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups, 2)]
+                    else:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups)]
+
+        reps_list = [[rep_in]+middle_layers for rep_in,
+                     middle_layers in zip(self.rep_in_list, middle_layers_list)]
+        rin_list = []
+        rout_list = []
+        for i in range(len(reps_list[0])-1):
+            rins = []
+            routs = []
+            for j in range(len(groups)):
+                rins.append(reps_list[j][i])
+                routs.append(reps_list[j][i+1])
+            rin_list.append(rins)
+            rout_list.append(routs)
+        self.network = nn.Sequential(
+            *[MixedEMLPBlockV2(rins, routs, gnl, extend)
+              for rins, routs in zip(rin_list, rout_list)],
+            MixedLinearV2(
+                rout_list[-1], self.rep_out_list, extend)
+        )
+
+    def __call__(self, S, training=True):
+        return self.network(S)
