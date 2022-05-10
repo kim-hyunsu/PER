@@ -10,7 +10,7 @@ from objax.module import Module
 import objax
 import jax.numpy as jnp
 import emlp.nn.objax as nn
-from emlp.reps.representation import Rep, ScalarRep
+from emlp.reps.representation import Rep, ScalarRep, Base
 from oil.utils.utils import Named, export
 import logging
 import jax
@@ -1323,9 +1323,37 @@ class SoftMixedEMLP(Module, metaclass=Named):
             SoftMixedGroupLinear(
                 rout_list[-1], self.rep_out_list, rpp_init, extend)
         )
+        self.original_projections = None
 
     def __call__(self, S, training=True):
         return self.network(S)
+
+    def get_proj(self, idx):
+        projections = []
+        for lyr in self.network:
+            if isinstance(lyr, SoftMixedEMLPBlock):
+                lyr = lyr.linear
+            if idx == 0:
+                Pw = lyr.Pw
+                Pb = lyr.Pb
+            else:
+                Pw = lyr.Pw_list[idx-1]
+                Pb = lyr.Pb_list[idx-1]
+            projections.append((Pw, Pb))
+        return projections
+
+    def set_proj(self, projections):
+        if self.original_projections is None:
+            self.original_projections = self.get_proj(0)
+        for lyr, (Pw, Pb) in zip(self.network, projections):
+            if isinstance(lyr, SoftMixedEMLPBlock):
+                lyr = lyr.linear
+            lyr.Pw = Pw
+            lyr.Pb = Pb
+
+    def reset_proj(self):
+        self.set_proj(self.original_projections)
+        self.original_projections = None
 
 
 class SoftMixedEMLPBlock(Module):
@@ -1345,7 +1373,7 @@ class SoftMixedEMLPBlock(Module):
 
 
 def reset_solcache(reps):
-    if isinstance(reps, ScalarRep):
+    if isinstance(reps, ScalarRep) or isinstance(reps, Base):
         reps.solcache = {}
     else:
         for rep in reps.reps:
@@ -1505,3 +1533,127 @@ class MixedEMLPV2(Module, metaclass=Named):
 
     def __call__(self, S, training=True):
         return self.network(S)
+
+
+@export
+class HybridSoftEMLP(Module, metaclass=Named):
+
+    def __init__(self, rep_in, rep_out, groups,
+                 ch=384, num_layers=3, gnl=False, rpp_init=False, extend=False):
+        super().__init__()
+        logging.info("Initing SoftMultiEMLP")
+        self.rep_in_list = [rep_in(g) for g in groups]
+        self.rep_out_list = [rep_out(g) for g in groups]
+        self.groups = groups
+        if isinstance(ch, int):
+            if extend:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups, 2)]
+            else:
+                middle_layers_list = [num_layers*[sum_rep]
+                                      for sum_rep in uniform_reps(ch, groups)]
+        elif isinstance(ch, Rep):
+            middle_layers_list = [num_layers*[ch(g)] for g in groups]
+        else:
+            for c in ch:
+                if isinstance(c, Rep):
+                    middle_layers_list = [c(g) for g in groups]
+                else:
+                    if extend:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups, 2)]
+                    else:
+                        middle_layers_list = [num_layers*[sum_rep]
+                                              for sum_rep in uniform_reps(c, groups)]
+
+        reps_list = [[rep_in]+middle_layers for rep_in,
+                     middle_layers in zip(self.rep_in_list, middle_layers_list)]
+        rin_list = []
+        rout_list = []
+        for i in range(len(reps_list[0])-1):
+            rins = []
+            routs = []
+            for j in range(len(groups)):
+                rins.append(reps_list[j][i])
+                routs.append(reps_list[j][i+1])
+            rin_list.append(rins)
+            rout_list.append(routs)
+        self.network = nn.Sequential(
+            *[HybridSoftEMLPBlock(rins, routs, gnl, rpp_init, extend)
+              for rins, routs in zip(rin_list, rout_list)],
+            HybridSoftLinear(
+                rout_list[-1], self.rep_out_list, rpp_init, extend)
+        )
+
+    def __call__(self, S, training=True):
+        return self.network(S)
+
+    def set_state(self, state):
+        for lyr in self.network:
+            if isinstance(lyr, HybridSoftEMLPBlock):
+                lyr = lyr.linear
+            lyr.state = state
+
+    def get_current_state(self):
+        lyr = self.network[0].linear
+        return lyr.state
+
+
+class HybridSoftEMLPBlock(Module):
+    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init, extend):
+        super().__init__()
+        self.linear = HybridSoftLinear(
+            rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init, extend)
+        self.bilinear = nn.BiLinear(
+            nn.gated(rep_out_list[0]), nn.gated(rep_out_list[0]))
+        self.nonlinearity = RPPGatedNonlinearity(
+            rep_out_list[0]) if not gnl else nn.GatedNonlinearity(rep_out_list[0])
+
+    def __call__(self, x):
+        lin = self.linear(x)
+        preact = self.bilinear(lin) + lin
+        return self.nonlinearity(preact)
+
+
+class HybridSoftLinear(Module):
+    def __init__(self, repin_list, repout_list, rpp_init, extend):
+        self.extend = extend
+        if extend:
+            self.mask, self.value = extend_dim_mask(repin_list[0])
+        nin, nout = repin_list[0].size(), repout_list[0].size()
+        init_b = objax.random.uniform((nout,))/jnp.sqrt(nout)
+        init_w = orthogonal((nout, nin))
+
+        rep_W_list = [repout << repin for repout,
+                      repin in zip(repout_list, repin_list)]
+        rep_bias_list = repout_list
+        self.Pw_list = []
+        self.Pb_list = []
+        for rep_W, rep_bias in zip(rep_W_list, rep_bias_list):
+            rep_W = reset_solcache(rep_W)
+            rep_bias = reset_solcache(rep_bias)
+            self.Pw_list.append(rep_W.equivariant_projector())
+            self.Pb_list.append(rep_bias.equivariant_projector())
+
+        if rpp_init:
+            init_w = (self.Pw_list[0]@init_w.reshape(-1)
+                      ).reshape(*init_w.shape) + RPP_SCALE*init_w
+            init_b = (self.Pb_list[0]@init_b.reshape(-1)
+                      ).reshape(*init_b.shape) + RPP_SCALE*init_b
+
+        self.b = TrainVar(init_b)
+        self.w = TrainVar(init_w)
+
+        self.state = -1
+
+    def __call__(self, x):
+        if self.extend:
+            x = x*self.mask.reshape(1, -1) + self.value.reshape(1, -1)
+        if self.state == -1:  # only regularization
+            return x@self.w.value.T + self.b.value
+        else:  # subgroup projection
+            Pw = self.Pw_list[self.state]
+            Pb = self.Pb_list[self.state]
+            W = (Pw@self.w.value.reshape(-1)).reshape(*self.w.value.shape)
+            b = Pb@self.b.value
+            return x@W.T + b

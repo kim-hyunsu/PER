@@ -147,7 +147,7 @@ def main(args):
         opt = objax.optimizer.Adam(model.vars())  # ,beta2=.99)
 
         def equiv_regularizer(model, net_name):
-            rglr1_list = [0 for _ in range(len(equiv_coef))]
+            rglr1_list = [0 for _ in range(len(G))]
             rglr2 = 0
             if "softemlp" in net_name:
                 print("Using", net_name)
@@ -202,11 +202,8 @@ def main(args):
         @ objax.Function.with_vars(model.vars())
         def mse(x, y):
             yhat = model(x)
-            rglr1_list = [0.]
-            rglr2 = 0.
-            if "soft" in args.network.lower():
-                rglr1_list, rglr2 = equiv_regularizer(
-                    model, args.network.lower())
+            rglr1_list, rglr2 = equiv_regularizer(
+                model, args.network.lower())
 
             return ((yhat-y)**2).mean(), rglr1_list, rglr2, (yhat, y)
 
