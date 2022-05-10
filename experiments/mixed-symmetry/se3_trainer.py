@@ -40,9 +40,9 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    lr = 3e-3
+    lr = args.lr
 
-    bs = 500
+    bs = args.bs
     logger = []
 
     equiv_wd = [float(wd) for wd in args.equiv_wd.split(",")]
@@ -68,9 +68,9 @@ def main(args):
 
         # Initialize dataset with 1000 examples
         dset = SyntheticSE3Dataset(
-            3000, for_mlp=True if args.network.lower() == "mlp" else False,
+            args.num_data, for_mlp=True if args.network.lower() == "mlp" else False,
             noisy=args.noisy, noise=args.noise, complex=args.complex)
-        split = {'train': -1, 'val': 1000, 'test': 1000}
+        split = {'train': -1, 'val': args.valid_data, 'test': 1000}
         datasets = split_dataset(dset, splits=split)
         dataloaders = {k: LoaderTo(DataLoader(v, batch_size=min(bs, len(v)), shuffle=(k == 'train'),
                                               num_workers=0, pin_memory=False)) for k, v in datasets.items()}
@@ -146,6 +146,11 @@ def main(args):
 
         opt = objax.optimizer.Adam(model.vars())  # ,beta2=.99)
 
+        def cosine_schedule(init_value, current_steps, total_steps, alpha=0.0):
+            cosine_decay = 0.5 * (1 + jnp.cos(jnp.pi * current_steps / total_steps))
+            decayed = (1 - alpha) * cosine_decay + alpha
+            return init_value * decayed
+            
         def equiv_regularizer(model, net_name):
             rglr1_list = [0 for _ in range(len(G))]
             rglr2 = 0
@@ -283,8 +288,13 @@ def main(args):
             equiv = equiv.at[interval_idx:].set(equiv_coef[interval_idx:])
 
             train_mse = 0
+            if args.cosine:
+                lr_ = cosine_schedule(lr, epoch, num_epochs, alpha=0.0)
             for x, y in trainloader:
-                l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
+                if args.cosine:
+                    l = train_op(jnp.array(x), jnp.array(y), lr_, equiv)
+                else:
+                    l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
                 train_mse += l[0]*x.shape[0]
             train_mse /= len(trainloader.dataset)
             valid_mse = 0
@@ -300,6 +310,10 @@ def main(args):
             for i, rglr1 in enumerate(valid_rglr1_list):
                 contents[f"equiv_rglr_{i}"] = rglr1
             contents["l2_rglr"] = valid_rglr2
+            if args.cosine:
+                contents["lr"] = lr_
+            else:
+                contents["lr"] = lr
             wandb.log(contents)
             if valid_mse < top_mse:
                 top_mse = valid_mse
@@ -410,6 +424,30 @@ if __name__ == "__main__":
         "--noise",
         type=float,
         default=0
+    )
+    parser.add_argument(
+        "--num_data",
+        type=int,
+        default=7000
+    )
+    parser.add_argument(
+        "--valid_data",
+        type=int,
+        default=1000
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.0001
+    )
+    parser.add_argument(
+        "--bs",
+        type=int,
+        default=500
+    )
+    parser.add_argument(
+        "--cosine",
+        action="store_true"
     )
     args = parser.parse_args()
 
