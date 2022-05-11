@@ -1390,6 +1390,7 @@ class SoftMixedGroupLinear(Module):
         init_b = objax.random.uniform((nout,))/jnp.sqrt(nout)
         init_w = orthogonal((nout, nin))
 
+        print(repin_list[0])
         rep_W_list = [repout << repin for repout,
                       repin in zip(repout_list, repin_list)]
         rep_bias_list = repout_list

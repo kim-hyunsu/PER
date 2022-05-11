@@ -206,7 +206,7 @@ class GroupAugmentation(Module):
 
 @export
 class SyntheticSE3Dataset(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=3, for_mlp=False, noisy=False, noise=0, complex=False):
+    def __init__(self, N=1024, k=3, for_mlp=False, noisy=False, noise=0, complex=False, Tsymmetric=False):
         super().__init__()
         d = 3
         self.dim = (d+1)*k
@@ -228,8 +228,13 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
             Y += (X[-1]-X[0]).pow(2).sum(1)
             Y = Y.unsqueeze(-1)
             err = 0
-            for i in range(k):
-                err += X[i].pow(2).sum(1)
+            if not Tsymmetric:
+                for i in range(k):
+                    err += X[i].pow(2).sum(1)
+            else:
+                for i in range(k-1):
+                    err += (X[i]-X[i+1]).abs().sum(1)
+                err += (X[-1]-X[0]).abs().sum(1)
             err = err.unsqueeze(-1)
             if complex:
                 Y1 = torch.tanh(Y)

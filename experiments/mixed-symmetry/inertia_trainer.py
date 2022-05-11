@@ -129,6 +129,7 @@ def main(args):
                                    rpp_init=args.rpp_init)
         else:
             raise Exception()
+
         equivlength = len(G) if isinstance(G, tuple) else 1
         equiv_coef = [0. for _ in range(equivlength)]
         for i, eq in enumerate(args.equiv.split(",")):
@@ -326,12 +327,12 @@ def main(args):
                 x, y = jnp.array(x),  jnp.array(y)
                 l = mse(x, y)
                 valid_mse += l*x.shape[0]
-                if not args.logoff or net_name in ["hybridsoftemlp"]:
+                if modelsearch_cond or (not args.logoff and net_name in ["exp:partialprojection", "exp:partialprojection2"]):
                     msebystate_list = msebystate(x, y)
                     for i, mse_by_state in enumerate(msebystate_list):
                         valid_msebystate_list[i] += mse_by_state*x.shape[0]
             valid_mse /= len(validloader.dataset)
-            if not args.logoff or net_name in ["hybridsoftemlp"]:
+            if modelsearch_cond or (not args.logoff and net_name in ["exp:partialprojection", "exp:partialprojection2"]):
                 for i in range(statelength):
                     valid_msebystate_list[i] /= len(validloader.dataset)
                     if top_msebystate_list[i] > valid_msebystate_list[i]:
@@ -432,7 +433,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--epochs",
         type=int,
-        default=1500
+        default=8000
     )
     parser.add_argument(
         "--trials",

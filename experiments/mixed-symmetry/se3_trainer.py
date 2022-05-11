@@ -1,4 +1,3 @@
-from email.policy import default
 import sys
 
 from experiments.datasets import SyntheticSE3Dataset  # nopep8
@@ -14,7 +13,7 @@ import numpy as np
 import torch.nn as nn
 import torch
 from datasets import ModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
-from rpp.objax import (MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
+from rpp.objax import (HybridSoftEMLP, MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
                        MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2,
                        MixedEMLPV2)
 from oil.tuning.args import argupdated_config
@@ -41,13 +40,13 @@ def main(args):
     np.random.seed(seed)
 
     lr = args.lr
+    _lr = lr
 
     bs = args.bs
     logger = []
 
     equiv_wd = [float(wd) for wd in args.equiv_wd.split(",")]
     basic_wd = [float(wd) for wd in args.basic_wd.split(",")]
-    equiv_coef = jnp.array([float(eq) for eq in args.equiv.split(",")])
     intervals = [int(interval) for interval in args.intervals.split(",")]
 
     mse_list = []
@@ -69,7 +68,8 @@ def main(args):
         # Initialize dataset with 1000 examples
         dset = SyntheticSE3Dataset(
             args.num_data, for_mlp=True if args.network.lower() == "mlp" else False,
-            noisy=args.noisy, noise=args.noise, complex=args.complex)
+            noisy=args.noisy, noise=args.noise, complex=args.complex,
+            Tsymmetric=args.Tsymmetric)
         split = {'train': -1, 'val': args.valid_data, 'test': 1000}
         datasets = split_dataset(dset, splits=split)
         dataloaders = {k: LoaderTo(DataLoader(v, batch_size=min(bs, len(v)), shuffle=(k == 'train'),
@@ -116,6 +116,13 @@ def main(args):
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init,
                                   extend=True)
+        elif args.network.lower() == "se3softemlp":
+            G = (SE3(),)
+            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
         elif args.network.lower() == "r3t3softemlp":
             G = (RotationGroup(3), TranslationGroup(3))
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
@@ -130,6 +137,13 @@ def main(args):
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init,
                                   extend=True)
+        elif args.network.lower() == "t3r3softmixedemlp":
+            G = (TranslationGroup(3), RotationGroup(3))
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
         elif args.network.lower() == "r3se3softmixedemlp":
             G = (RotationGroup(3), SE3())
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
@@ -137,8 +151,21 @@ def main(args):
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init,
                                   extend=True)
+        elif args.network.lower() == "hybridsoftemlp":
+            G = (SE3(), RotationGroup(3), TranslationGroup(3))
+            model = HybridSoftEMLP(dset.rep_in, dset.rep_out,
+                                   groups=G, num_layers=3, ch=args.ch,
+                                   gnl=args.gatednonlinearity,
+                                   rpp_init=args.rpp_init,
+                                   extend=True)
         else:
             raise Exception()
+
+        equivlength = len(G) if isinstance(G, tuple) else 1
+        equiv_coef = [0. for _ in range(equivlength)]
+        for i, eq in enumerate(args.equiv.split(",")):
+            equiv_coef[i] = float(eq)
+        equiv_coef = jnp.array(equiv_coef)
 
         if args.aug:
             assert not isinstance(G, tuple)
@@ -147,15 +174,18 @@ def main(args):
         opt = objax.optimizer.Adam(model.vars())  # ,beta2=.99)
 
         def cosine_schedule(init_value, current_steps, total_steps, alpha=0.0):
-            cosine_decay = 0.5 * (1 + jnp.cos(jnp.pi * current_steps / total_steps))
+            cosine_decay = 0.5 * \
+                (1 + jnp.cos(jnp.pi * current_steps / total_steps))
             decayed = (1 - alpha) * cosine_decay + alpha
             return init_value * decayed
-            
-        def equiv_regularizer(model, net_name):
-            rglr1_list = [0 for _ in range(len(G))]
+
+        @ objax.Jit
+        @ objax.Function.with_vars(model.vars())
+        def equiv_regularizer():
+            net_name = args.network.lower()
+            rglr1_list = [0 for _ in range(equivlength)]
             rglr2 = 0
             if "softemlp" in net_name:
-                print("Using", net_name)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -170,22 +200,22 @@ def main(args):
                             ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
             elif "softmixedemlp" in net_name:
-                print("Using", net_name)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
-                    W = lyr.Pw@lyr.w.value.reshape(-1)
-                    b = lyr.Pb@lyr.b.value
+                    W = lyr.w.value.reshape(-1)
+                    b = lyr.b.value
                     Pw_list = lyr.Pw_list
                     Pb_list = lyr.Pb_list
                     for i, (Pw1, Pb1) in enumerate(zip(Pw_list, Pb_list)):
-                        W1 = Pw1@W
-                        b1 = Pb1@b
-                        rglr1_list[i] += 0.5 * \
-                            ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
+                        W1 = Pw1@lyr.Pw@W
+                        Wdiff = W-W1
+                        b1 = Pb1@lyr.Pb@b
+                        bdiff = b-b1
+                        rglr1_list[i] += 0.5*(Wdiff*(lyr.Pw@Wdiff)).sum() + \
+                            0.5*(bdiff*(lyr.Pb@bdiff)).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
             elif "mixedemlp" in net_name:
-                print("Using", net_name)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -205,12 +235,26 @@ def main(args):
 
         @ objax.Jit
         @ objax.Function.with_vars(model.vars())
+        def msebystate(x, y):
+            net_name = args.network.lower()
+            if net_name in ["hybridsoftemlp"]:
+                current_state = model.get_current_state()
+                msebystate_list = []
+                for state in range(-1, 3):
+                    model.set_state(state)
+                    yhat_prime = model(x)
+                    msebystate_list.append(((yhat_prime-y)**2).mean())
+                model.set_state(current_state)
+            else:
+                msebystate_list = [0. for _ in range(equivlength)]
+
+            return msebystate_list
+
+        @ objax.Jit
+        @ objax.Function.with_vars(model.vars())
         def mse(x, y):
             yhat = model(x)
-            rglr1_list, rglr2 = equiv_regularizer(
-                model, args.network.lower())
-
-            return ((yhat-y)**2).mean(), rglr1_list, rglr2, (yhat, y)
+            return ((yhat-y)**2).mean()
 
         @ objax.Jit
         @ objax.Function.with_vars(model.vars())
@@ -220,17 +264,17 @@ def main(args):
             mse = ((yhat-y)**2).mean()
 
             rglr = 0
-            if "soft" in args.network.lower():
-                rglr1_list, rglr2 = equiv_regularizer(
-                    model, args.network.lower())
+            net_name = args.network.lower()
+            if "soft" in net_name:
+                rglr1_list, rglr2 = equiv_regularizer()
                 for eq, rglr1 in zip(equiv, rglr1_list):
                     rglr += eq*rglr1
                 rglr += args.wd*rglr2
-            elif "mlp" == args.network.lower():
+            elif "mlp" == net_name:
                 basic_l2 = sum((v.value ** 2).sum()
                                for k, v in model.vars().items() if k.endswith('w'))
                 rglr += basic_wd[0]*basic_l2
-            else:
+            elif "mixedemlp" in net_name:
                 basic_l2 = sum((v.value ** 2).sum()
                                for k, v in model.vars().items() if k.endswith('w_basic'))
                 equiv_l2 = sum((v.value ** 2).sum()
@@ -265,6 +309,8 @@ def main(args):
         top_mse = float('inf')
         top_test_mse = float('inf')
         pbar = tqdm(range(num_epochs))
+        statelength = len(G)+1 if isinstance(G, tuple) else 2
+        top_msebystate_list = [float('inf') for _ in range(statelength)]
         for epoch in pbar:
 
             # begin = [0]+intervals[:-1]
@@ -287,39 +333,86 @@ def main(args):
             equiv = jnp.zeros_like(equiv_coef)
             equiv = equiv.at[interval_idx:].set(equiv_coef[interval_idx:])
 
+            contents = dict()
+            contents["state"] = model.get_current_state() if hasattr(
+                model, "get_current_state") else -2
+
+            # training
             train_mse = 0
             if args.cosine:
-                lr_ = cosine_schedule(lr, epoch, num_epochs, alpha=0.0)
+                lr = cosine_schedule(_lr, epoch, num_epochs, alpha=0.0)
             for x, y in trainloader:
-                if args.cosine:
-                    l = train_op(jnp.array(x), jnp.array(y), lr_, equiv)
-                else:
-                    l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
+                l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
                 train_mse += l[0]*x.shape[0]
             train_mse /= len(trainloader.dataset)
+
+            # evaluating
+            net_name = args.network.lower()
+            modelsearch_cond = (
+                epoch+1) % 10 == 0 and epoch < 400 and net_name in ["hybridsoftemlp"]
             valid_mse = 0
-            valid_rglr1_list = [0 for _ in range(len(equiv_coef))]
-            valid_rglr2 = 0
+            valid_msebystate_list = [0 for _ in range(statelength)]
             for x, y in validloader:
-                l, rglr1_list, rglr2, pred = mse(jnp.array(x), jnp.array(y))
+                x, y = jnp.array(x), jnp.array(y)
+                l = mse(x, y)
                 valid_mse += l*x.shape[0]
-                valid_rglr1_list = rglr1_list
-                valid_rglr2 = rglr2
+                if modelsearch_cond:
+                    msebystate_list = msebystate(x, y)
+                    for i, mse_by_state in enumerate(msebystate_list):
+                        valid_msebystate_list[i] += mse_by_state*x.shape[0]
             valid_mse /= len(validloader.dataset)
-            contents = {"train_mse": train_mse, "valid_mse": valid_mse}
-            for i, rglr1 in enumerate(valid_rglr1_list):
-                contents[f"equiv_rglr_{i}"] = rglr1
-            contents["l2_rglr"] = valid_rglr2
-            if args.cosine:
-                contents["lr"] = lr_
-            else:
+            if modelsearch_cond:
+                for i in range(statelength):
+                    valid_msebystate_list[i] /= len(validloader.dataset)
+                    if top_msebystate_list[i] > valid_msebystate_list[i]:
+                        top_msebystate_list[i] = valid_msebystate_list[i]
+            if not args.logoff:
+                rglr1_list, rglr2 = equiv_regularizer()
+
+            # optimal model search for hybridsoftemlp
+            if modelsearch_cond:
+                ############### version 1 ################
+                # current_state = model.get_current_state()
+                # if current_state == -1:
+                #     optimal_state = min(range(statelength),
+                #                         key=lambda i: top_msebystate_list[i])-1
+                #     model.set_state(optimal_state)
+                # elif top_msebystate_list[0] < top_msebystate_list[current_state+1]:
+                #     model.set_state(-1)
+
+                ############### version 2 ################
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # model.set_state(optimal_state)
+
+                ############### version 3 ################
+                optimal_state = min(range(statelength),
+                                    key=lambda i: top_msebystate_list[i])-1
+                mse_mean = sum(top_msebystate_list)/len(top_msebystate_list)
+                mse_var = sum(
+                    (ele-mse_mean)**2 for ele in top_msebystate_list)/len(top_msebystate_list)
+                mse_std = jnp.sqrt(mse_var)
+                if top_msebystate_list[optimal_state+1] <= mse_mean-0.5*mse_std:
+                    model.set_state(optimal_state)
+
+            # report
+            if not args.logoff:
+                contents["train_mse"] = train_mse
+                contents["valid_mse"] = valid_mse
+                for i, rglr1 in enumerate(rglr1_list):
+                    contents[f"equiv_rglr_{i}"] = rglr1
+                contents["l2_rglr"] = rglr2
                 contents["lr"] = lr
-            wandb.log(contents)
+                for i, mse_by_state in enumerate(valid_msebystate_list):
+                    contents[f"mse_for_state_{i-1}"] = mse_by_state
+                wandb.log(contents)
+
+            # measure test mse
             if valid_mse < top_mse:
                 top_mse = valid_mse
                 test_mse = 0
                 for x, y in testloader:
-                    l, _, _, _ = mse(jnp.array(x), jnp.array(y))
+                    l = mse(jnp.array(x), jnp.array(y))
                     test_mse += l*x.shape[0]
                 test_mse /= len(testloader.dataset)
                 top_test_mse = test_mse
@@ -328,7 +421,7 @@ def main(args):
         mse_list.append(top_test_mse)
         print(f"Trial {trial+1}, Test MSE: {top_test_mse:.3e}")
 
-    print(f"Total Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}")
+    print(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}")
 
 
 if __name__ == "__main__":
@@ -386,7 +479,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--epochs",
         type=int,
-        default=1500
+        default=10000
     )
     parser.add_argument(
         "--trials",
@@ -405,7 +498,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ch",
         type=int,
-        default=384
+        default=64
     )
     parser.add_argument(
         "--intervals",
@@ -428,7 +521,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_data",
         type=int,
-        default=7000
+        default=3000
     )
     parser.add_argument(
         "--valid_data",
@@ -438,15 +531,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lr",
         type=float,
-        default=0.0001
+        default=0.0002
     )
     parser.add_argument(
         "--bs",
         type=int,
-        default=500
+        default=200
     )
     parser.add_argument(
         "--cosine",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--Tsymmetric",
         action="store_true"
     )
     args = parser.parse_args()
