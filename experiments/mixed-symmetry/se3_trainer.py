@@ -151,6 +151,13 @@ def main(args):
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init,
                                   extend=True)
+        elif args.network.lower() == "t3se3softmixedemlp":
+            G = (TranslationGroup(3), SE3())
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
         elif args.network.lower() == "hybridsoftemlp":
             G = (SE3(), RotationGroup(3), TranslationGroup(3))
             model = HybridSoftEMLP(dset.rep_in, dset.rep_out,
@@ -349,7 +356,7 @@ def main(args):
             # evaluating
             net_name = args.network.lower()
             modelsearch_cond = (
-                epoch+1) % 10 == 0 and epoch < 400 and net_name in ["hybridsoftemlp"]
+                epoch+1) % 50 == 0 and net_name in ["hybridsoftemlp"]
             valid_mse = 0
             valid_msebystate_list = [0 for _ in range(statelength)]
             for x, y in validloader:
@@ -380,20 +387,29 @@ def main(args):
                 # elif top_msebystate_list[0] < top_msebystate_list[current_state+1]:
                 #     model.set_state(-1)
 
-                ############### version 2 ################
-                # optimal_state = min(range(statelength),
-                #                     key=lambda i: top_msebystate_list[i])-1
-                # model.set_state(optimal_state)
+                ############### version 1 ################
+                # current_state = model.get_current_state()
+                # if current_state == -1:
+                #     optimal_state = min(range(statelength),
+                #                         key=lambda i: top_msebystate_list[i])-1
+                #     model.set_state(optimal_state)
+                # elif top_msebystate_list[0] < top_msebystate_list[current_state+1]:
+                #     model.set_state(-1)
 
-                ############### version 3 ################
+                ############### version 2 ################
                 optimal_state = min(range(statelength),
                                     key=lambda i: top_msebystate_list[i])-1
-                mse_mean = sum(top_msebystate_list)/len(top_msebystate_list)
-                mse_var = sum(
-                    (ele-mse_mean)**2 for ele in top_msebystate_list)/len(top_msebystate_list)
-                mse_std = jnp.sqrt(mse_var)
-                if top_msebystate_list[optimal_state+1] <= mse_mean-0.5*mse_std:
-                    model.set_state(optimal_state)
+                model.set_state(optimal_state)
+
+                ############### version 3 ################
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # mse_mean = sum(top_msebystate_list)/len(top_msebystate_list)
+                # mse_var = sum(
+                #     (ele-mse_mean)**2 for ele in top_msebystate_list)/len(top_msebystate_list)
+                # mse_std = jnp.sqrt(mse_var)
+                # if top_msebystate_list[optimal_state+1] <= mse_mean-0.5*mse_std:
+                #     model.set_state(optimal_state)
 
             # report
             if not args.logoff:

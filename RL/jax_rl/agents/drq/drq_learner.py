@@ -1,6 +1,7 @@
 """Implementations of algorithms for continuous control."""
 
 from typing import Optional, Sequence, Tuple
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -16,7 +17,7 @@ from jax_rl.networks import policies
 from jax_rl.networks.common import InfoDict, Model
 
 
-@jax.partial(jax.jit, static_argnums=(2, 3, 4, 5))
+@partial(jax.jit, static_argnums=(2, 3, 4, 5))
 def _update_jit(drq: ActorCriticTemp, batch: Batch, discount: float,
                 tau: float, target_entropy: float,
                 update_target: bool) -> Tuple[ActorCriticTemp, InfoDict]:

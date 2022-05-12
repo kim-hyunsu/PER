@@ -2,7 +2,6 @@
 
 from typing import Sequence, Tuple
 
-import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,9 +13,10 @@ from jax_rl.agents.actor_critic_temp import ActorCriticTemp
 from jax_rl.datasets import Batch
 from jax_rl.networks import critic_net, policies
 from jax_rl.networks.common import InfoDict, Model
+from functools import partial
 
 
-@jax.partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
+@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def _update_jit(models: ActorCriticTemp, batch: Batch, discount: float,
                 tau: float, num_samples: int, beta: float,
                 update_target: bool) -> Tuple[ActorCriticTemp, InfoDict]:

@@ -1,6 +1,7 @@
 """Implementations of algorithms for continuous control."""
 
 from typing import Optional, Sequence, Tuple
+from functools import partial
 
 import flax
 import jax
@@ -16,7 +17,8 @@ from jax_rl.networks.common import InfoDict, Model
 from emlp.reps import Rep
 from emlp.groups import Group
 
-@jax.partial(jax.jit, static_argnums=(2, 3, 4, 5))
+
+@partial(jax.jit, static_argnums=(2, 3, 4, 5))
 def _update_jit(sac: ActorCriticTemp, batch: Batch, discount: float,
                 tau: float, target_entropy: float,
                 update_target: bool) -> Tuple[ActorCriticTemp, InfoDict]:
@@ -49,8 +51,8 @@ class SACLearner(object):
                  symmetry_group: Optional[Group] = None,
                  state_rep: Optional[Rep] = None,
                  action_rep: Optional[Rep] = None,
-                 state_transform=lambda x:x,
-                 action_transform=lambda x:x,
+                 state_transform=lambda x: x,
+                 action_transform=lambda x: x,
                  rpp_value=True):
 
         action_dim = actions.shape[-1]
@@ -67,17 +69,17 @@ class SACLearner(object):
         rng = jax.random.PRNGKey(seed)
         rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
 
-        if symmetry_group is not None: # Use RPP-EMLP policy
-            actor_def = policies.RPPNormalTanhPolicy(state_rep,action_rep,symmetry_group,hidden_dims,
-                state_transform=state_transform,action_transform=action_transform)
+        if symmetry_group is not None:  # Use RPP-EMLP policy
+            actor_def = policies.RPPNormalTanhPolicy(state_rep, action_rep, symmetry_group, hidden_dims,
+                                                     state_transform=state_transform, action_transform=action_transform)
         else:
             actor_def = policies.NormalTanhPolicy(hidden_dims, action_dim)
         actor = Model.create(actor_def,
                              inputs=[actor_key, observations],
                              tx=optax.adam(learning_rate=actor_lr))
         if rpp_value:
-            critic_def = critic_net.RPPDoubleCritic(state_rep,action_rep,symmetry_group,hidden_dims,
-                        state_transform=state_transform,action_transform=action_transform)
+            critic_def = critic_net.RPPDoubleCritic(state_rep, action_rep, symmetry_group, hidden_dims,
+                                                    state_transform=state_transform, action_transform=action_transform)
         else:
             critic_def = critic_net.DoubleCritic(hidden_dims)
         critic = Model.create(critic_def,

@@ -227,6 +227,9 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
                 Y += (X[i]-X[i+1]).pow(2).sum(1)
             Y += (X[-1]-X[0]).pow(2).sum(1)
             Y = Y.unsqueeze(-1)
+            Y_mean = Y.mean(0).unsqueeze(0)
+            Y_std = Y.std(0).unsqueeze(0)
+            print(f"Y mean {Y_mean} std {Y_std}")
             err = 0
             if not Tsymmetric:
                 for i in range(k):
@@ -236,6 +239,9 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
                     err += (X[i]-X[i+1]).abs().sum(1)
                 err += (X[-1]-X[0]).abs().sum(1)
             err = err.unsqueeze(-1)
+            err_mean = err.mean(0).unsqueeze(0)
+            err_std = err.std(0).unsqueeze(0)
+            print(f"err mean {err_mean} std {err_std}")
             if complex:
                 Y1 = torch.tanh(Y)
                 Y2 = torch.sigmoid(Y)
@@ -245,10 +251,9 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
                 err2 = torch.sigmoid(err)
                 err3 = torch.relu(err)
                 err = err1+err3-err2
-            Y = Y-noise*err
-            # Y_mean = Y.mean(0).unsqueeze(0)
-            # Y_std = Y.std(0).unsqueeze(0)
-            # Y = (Y-Y_mean)/Y_std
+            # Y = Y-noise*err
+            Y = err
+
             return X, Y
         if noisy:
             rng = torch.Generator()
