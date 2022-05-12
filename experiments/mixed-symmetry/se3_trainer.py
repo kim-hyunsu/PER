@@ -80,6 +80,7 @@ def main(args):
 
         G = dset.symmetry  # SE3()
         if args.network.lower() == "mlp":
+            args.basic_wd = [0.]
             G = SO(3)  # just for dimension matching
             model = MLP(dset.rep_in, dset.rep_out,
                         group=G, num_layers=3, ch=args.ch,

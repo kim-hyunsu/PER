@@ -69,6 +69,7 @@ def main(args):
 
         G = dset.symmetry  # O(3)
         if args.network.lower() == "mlp":
+            args.basic_wd = [0.]
             model = MLP(dset.rep_in, dset.rep_out,
                         group=G, num_layers=3, ch=args.ch)
         elif args.network.lower() == "emlp":
@@ -342,12 +343,18 @@ def main(args):
 
             # optimal model search for hybridsoftemlp
             if modelsearch_cond:
+                ############### version 1 ###############
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # reset_cond = optimal_state == -1
+                # transition_cond = model.get_current_state() == -1
+                # if reset_cond or transition_cond:
+                #     model.set_state(optimal_state)
+
+                ############### version 2 ################
                 optimal_state = min(range(statelength),
                                     key=lambda i: top_msebystate_list[i])-1
-                reset_cond = optimal_state == -1
-                transition_cond = model.get_current_state() == -1
-                if reset_cond or transition_cond:
-                    model.set_state(optimal_state)
+                model.set_state(optimal_state)
 
             # report
             if not args.logoff:
