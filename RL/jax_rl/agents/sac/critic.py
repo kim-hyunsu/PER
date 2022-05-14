@@ -9,8 +9,10 @@ from jax_rl.networks.common import InfoDict, Params
 
 import collections
 
+
 def isDict(pars):
-    return isinstance(pars, collections.Mapping)
+    return isinstance(pars, collections.abc.Mapping)
+
 
 def get_l2(pars):
     basic_l2 = 0.
@@ -27,6 +29,7 @@ def get_l2(pars):
                 equiv_l2 += (v**2).sum()
     return basic_l2, equiv_l2
 
+
 def target_update(sac: ActorCriticTemp, tau: float) -> ActorCriticTemp:
     new_target_params = jax.tree_multimap(
         lambda p, tp: p * tau + tp * (1 - tau), sac.critic.params,
@@ -38,7 +41,7 @@ def target_update(sac: ActorCriticTemp, tau: float) -> ActorCriticTemp:
 
 
 def update(sac: ActorCriticTemp, batch: Batch, discount: float,
-           soft_critic: bool,cbasic_wd:float,cequiv_wd:float) -> Tuple[ActorCriticTemp, InfoDict]:
+           soft_critic: bool, cbasic_wd: float, cequiv_wd: float) -> Tuple[ActorCriticTemp, InfoDict]:
     dist = sac.actor(batch.next_observations)
     rng, key = jax.random.split(sac.rng)
     next_actions, next_log_probs = dist.sample_and_log_prob(seed=key)

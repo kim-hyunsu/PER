@@ -29,10 +29,10 @@ def RPPNormalTanhPolicy(state_rep, action_rep, action_std_rep, G, ch: Sequence[i
         G) if action_std_rep is not None else action_rep
     body_rpp = HeadlessRPPEMLP(state_rep, G, ch)
     final_rep = parse_rep(ch, G, len(ch))[-1]
-    mean_head = MixedLinear(final_rep, action_rep,
-                            init_scale=0.01 if small_init else 1.0)
-    std_head = MixedLinear(final_rep, action_std_rep,
-                           init_scale=0.01 if small_init else 1.0)
+    # mean_head = MixedLinear(final_rep, action_rep,
+    #                         init_scale=0.01 if small_init else 1.0)
+    mean_head = MixedLinear(final_rep, action_rep)
+    std_head = MixedLinear(final_rep, action_std_rep)
     return _RPPNormalTanhPolicy(body_rpp, mean_head, std_head, state_transform, inv_action_transform)
 
 

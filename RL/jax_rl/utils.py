@@ -31,7 +31,7 @@ def make_env(env_name: str,
 
     if action_repeat > 1:
         env = wrappers.RepeatAction(env, action_repeat)
-    
+
     if isinstance(env.action_space, gym.spaces.box.Box):
         env = RescaleAction(env, -1.0, 1.0)
 
@@ -55,7 +55,7 @@ def make_env(env_name: str,
     if frame_stack > 1:
         env = wrappers.FrameStack(env, num_stack=frame_stack)
 
-    env.seed(seed)
+    env.reset(seed=seed)
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
 
