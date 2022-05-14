@@ -1,6 +1,7 @@
 import sys  # nopep8
 sys.path.append("../trainer/")  # nopep8
 sys.path.append("../")  # nopep8
+sys.path.append("../../")  # nopep8
 from tqdm import tqdm
 import argparse
 import objax
@@ -20,10 +21,10 @@ from rpp.groups import Union
 import wandb
 from functools import partial
 
-Oxy2 = O2eR3()
+Oxy2 = Embed(O(2), 3, slice(2))
 Oyz2 = Embed(O(2), 3, slice(1, 3))
 Oxz2 = Embed(O(2), 3, slice(0, 3, 2))
-
+# SLxy2 = Embed(SL(2), 3 , slice(2))
 
 def main(args):
 
@@ -44,8 +45,8 @@ def main(args):
 
     mse_list = []
     for trial in range(args.trials):
-        watermark = "{}_eq{}_wd{}_t{}".format(
-            args.network, args.equiv, args.wd, trial)
+        watermark = "{}sym_{}_eq{}_wd{}_t{}".format(
+            args.experiment, args.network, args.equiv, args.wd, trial)
 
         wandb.init(
             project="Mixed Symmetry, Inertia",
@@ -56,7 +57,7 @@ def main(args):
 
         # Initialize dataset with 1000 examples
         if args.noise_std == 0:
-            dset = ModifiedInertia(3000)
+            dset = ModifiedInertia(3000, noise=args.noise, axis=args.axis)
         else:
             dset = RandomlyModifiedInertia(3000, noise_std=args.noise_std)
         split = {'train': -1, 'val': 1000, 'test': 1000}
@@ -75,6 +76,7 @@ def main(args):
         elif args.network.lower() == "emlp":
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=3, ch=args.ch)
+        # mixedemlp == rpp
         elif args.network.lower() == 'mixedemlp':
             model = MixedEMLP(dset.rep_in, dset.rep_out,
                               group=G, num_layers=3, ch=args.ch, gnl=args.gatednonlinearity)
@@ -388,6 +390,12 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="modified inertia ablation")
     parser.add_argument(
+        "--experiment",
+        type=str,
+        default="unbal-",
+        help="type of network {per-, unbal-, mis-}",
+    )
+    parser.add_argument(
         "--basic_wd",
         type=str,
         default="1",
@@ -422,7 +430,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--wd",
         type=float,
-        default=1e-5  # 0 or 1e-5
+        default=0  # 0 or 1e-5
     )
     parser.add_argument(
         "--gated_wd",
@@ -465,6 +473,16 @@ if __name__ == "__main__":
         "--intervals",
         type=str,
         default="0,0"  # asummed two groups
+    )
+    parser.add_argument(
+        "--noise",
+        type=float,
+        default=0.3
+    )
+    parser.add_argument(
+        "--axis",
+        type=int,
+        default=2 #z axis
     )
     args = parser.parse_args()
 

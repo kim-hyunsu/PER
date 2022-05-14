@@ -1,8 +1,10 @@
 import sys
 
-from experiments.datasets import SyntheticSE3Dataset  # nopep8
 sys.path.append("../trainer/")  # nopep8
 sys.path.append("../")  # nopep8
+sys.path.append("../../")  # nopep8
+
+from experiments.datasets import SyntheticSE3Dataset  # nopep8
 import os
 from tqdm import tqdm
 import argparse
@@ -22,13 +24,21 @@ from utils import LoaderTo
 from torch.utils.data import DataLoader
 from rpp.objax import MLP, EMLP
 from emlp.groups import SO2eR3, O2eR3, DkeR3, Trivial, SO, SL, O, Embed
-from rpp.groups import Union, SE3, TranslationGroup, RotationGroup
+from rpp.groups import Union, SE3, TranslationGroup, RotationGroup, ExtendedEmbed
 import wandb
 from functools import partial
+from itertools import chain
 
 Oxy2 = O2eR3()
 Oyz2 = Embed(O(2), 3, slice(1, 3))
 Oxz2 = Embed(O(2), 3, slice(0, 3, 2))
+SL3 = Embed(SL(3), 4, slice(3))
+rxy2 = ExtendedEmbed(RotationGroup(2), 4, slice(2))
+ryz2 = ExtendedEmbed(RotationGroup(2), 4, slice(1,3))
+rxz2 = ExtendedEmbed(RotationGroup(2), 4, slice(0,3,2))
+txy2 = ExtendedEmbed(TranslationGroup(2), 4, slice(2))
+tyz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(1,3))
+txz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(0,3,2))
 
 
 def main(args):
@@ -52,11 +62,11 @@ def main(args):
     mse_list = []
     for trial in range(args.trials):
         if "soft" in args.network.lower():
-            watermark = "{}_eq{}_wd{}_gt{}_t{}".format(
-                args.network, args.equiv, args.wd, args.gated_wd, trial)
+            watermark = "{}sym_{}_eq{}_wd{}_gt{}_t{}".format(
+                args.sym, args.network, args.equiv, args.wd, args.gated_wd, trial)
         else:
-            watermark = "{}_eq{}_bs{}_gt{}_t{}".format(
-                args.network, args.equiv_wd, args.basic_wd, args.gated_wd, trial)
+            watermark = "{}sym_{}_eq{}_bs{}_gt{}_t{}".format(
+                args.sym, args.network, args.equiv_wd, args.basic_wd, args.gated_wd, trial)
 
         wandb.init(
             project="Mixed Symmetry, SE(3)",
@@ -69,7 +79,7 @@ def main(args):
         dset = SyntheticSE3Dataset(
             args.num_data, for_mlp=True if args.network.lower() == "mlp" else False,
             noisy=args.noisy, noise=args.noise, complex=args.complex,
-            Tsymmetric=args.Tsymmetric)
+            sym=args.sym)
         split = {'train': -1, 'val': args.valid_data, 'test': 1000}
         datasets = split_dataset(dset, splits=split)
         dataloaders = {k: LoaderTo(DataLoader(v, batch_size=min(bs, len(v)), shuffle=(k == 'train'),
@@ -99,6 +109,7 @@ def main(args):
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=3, ch=args.ch,
                          extend=True)
+        # mixedemlp = rpp
         elif args.network.lower() == 'mixedemlp':
             G = (SE3(), RotationGroup(3), TranslationGroup(3))
             model = MixedEMLPV2(dset.rep_in, dset.rep_out,
@@ -159,8 +170,24 @@ def main(args):
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init,
                                   extend=True)
+        elif args.network.lower() == "rxy2se3softmixedemlp":
+            G = (rxy2, SE3())
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
+        elif args.network.lower() == "txy2se3softmixedemlp":
+            G = (txy2, SE3())
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init,
+                                  extend=True)
         elif args.network.lower() == "hybridsoftemlp":
-            G = (SE3(), RotationGroup(3), TranslationGroup(3))
+            # G = (SE3(), RotationGroup(3), TranslationGroup(3))
+            G = (SE3(), RotationGroup(3), TranslationGroup(3), rxy2, ryz2, rxz2, txy2, tyz2, txz2)
+            
             model = HybridSoftEMLP(dset.rep_in, dset.rep_out,
                                    groups=G, num_layers=3, ch=args.ch,
                                    gnl=args.gatednonlinearity,
@@ -439,10 +466,22 @@ def main(args):
         print(f"Trial {trial+1}, Test MSE: {top_test_mse:.3e}")
 
     print(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}")
-
+    f = open("./result.txt", 'a')
+    f.write(watermark)
+    for i in range (len(mse_list)):
+        f.write(f"epoch{i}:{mse_list[i]:.3e} ")
+    f.write(f'\n{watermark}')
+    f.write(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}\n")
+    f.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="modified inertia ablation")
+    parser.add_argument(
+        "--experiment",
+        type=str,
+        default="unbal-",
+        help="type of network {perfect-, unbal-, mis-}",
+    )
     parser.add_argument(
         "--basic_wd",
         type=str,
@@ -473,7 +512,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--equiv",
         type=str,
-        default="0.5"
+        default="200"  # "200" for o3softemlp, "200,200" for o2o3softemlp, "1" for o2o3softmixedemlp, "200,0,0,0" for hybridsoftemlp
     )
     parser.add_argument(
         "--wd",
@@ -533,7 +572,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--noise",
         type=float,
-        default=0
+        default=1
     )
     parser.add_argument(
         "--num_data",
@@ -560,8 +599,9 @@ if __name__ == "__main__":
         action="store_true"
     )
     parser.add_argument(
-        "--Tsymmetric",
-        action="store_true"
+        "--sym",
+        type=str,
+        default=""
     )
     args = parser.parse_args()
 

@@ -57,7 +57,7 @@ class RotationGroup(Group):
 class TranslationGroup(Group):
     def __init__(self, n):
         d = n+1
-        self.lie_algebra = np.zeros(((n*(n-1))//2, d, d))
+        self.lie_algebra = np.zeros((n, d, d))
         for i in range(n):
             self.lie_algebra[i, -1, i] = 1
         super().__init__(n)
@@ -66,3 +66,26 @@ class TranslationGroup(Group):
 @export
 def SE3():
     return Union(RotationGroup(3), TranslationGroup(3))
+
+@export
+class ExtendedEmbed(Group):
+    """ A method to embed a given base group representation in larger vector space.
+    Inputs: 
+    G: the group (and base representation) to embed
+    d: the dimension in which to embed
+    slice: a slice object specifying which dimensions G acts on."""
+    def __init__(self,G,d,slice_):
+        self.lie_algebra = np.zeros((G.lie_algebra.shape[0],d,d))
+        self.discrete_generators = np.zeros((G.discrete_generators.shape[0],d,d))
+        self.discrete_generators += np.eye(d)
+        self.lie_algebra[:,slice_,slice_] = G.lie_algebra[:,slice(2),slice(2)]
+        # self.lie_algebra[:,-1,:] = G.lie_algebra[:,-1,:]
+        # self.lie_algebra[:,:,-1] = G.lie_algebra[:,:,-1]
+        self.discrete_generators[:,slice_,slice_]  =G.discrete_generators[:,slice(2),slice(2)]
+        # self.discrete_generators[:,-1,:] = G.discrete_generators[:,-1,:]
+        # self.discrete_generators[:,:,-1] = G.discrete_generators[:,:,-1]
+        self.name = f"{G}_R{d}"
+        super().__init__()
+   
+    def __repr__(self):
+        return self.name

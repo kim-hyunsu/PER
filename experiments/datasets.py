@@ -61,7 +61,7 @@ class RandomlyModifiedInertia(Dataset, metaclass=Named):
 
 @export
 class ModifiedInertia(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=5):
+    def __init__(self, N=1024, k=5, noise=0.3, axis=2):
         super().__init__()
         self.dim = (1+3)*k
         rng = torch.Generator()
@@ -74,10 +74,10 @@ class ModifiedInertia(Dataset, metaclass=Named):
         r2 = (ri**2).sum(-1)[..., None, None]
         inertia = (mi[:, :, None, None] *
                    (r2*I - ri[..., None]*ri[..., None, :])).sum(1)
-        g = I[2]  # z axis
+        g = I[axis]  # z axis
         v = (inertia*g).sum(-1)
         vgT = v[:, :, None]*g[None, None, :]
-        target = inertia + 3e-1*vgT
+        target = inertia + noise*vgT
         self.Y = target.reshape(-1, 9)
         self.rep_in = k*Scalar+k*Vector
         self.rep_out = T(2)
@@ -206,7 +206,7 @@ class GroupAugmentation(Module):
 
 @export
 class SyntheticSE3Dataset(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=3, for_mlp=False, noisy=False, noise=0, complex=False, Tsymmetric=False):
+    def __init__(self, N=1024, k=3, for_mlp=False, noisy=False, noise=0, complex=False, sym=""):
         super().__init__()
         d = 3
         self.dim = (d+1)*k
@@ -230,29 +230,53 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
             Y_mean = Y.mean(0).unsqueeze(0)
             Y_std = Y.std(0).unsqueeze(0)
             print(f"Y mean {Y_mean} std {Y_std}")
+
             err = 0
-            if not Tsymmetric:
+            if sym == "r3": #r3 perfect, t3 soft
                 for i in range(k):
                     err += X[i].pow(2).sum(1)
-            else:
+
+            elif sym == "t3": #t3 perfect, r3 soft
                 for i in range(k-1):
                     err += (X[i]-X[i+1]).abs().sum(1)
-                err += (X[-1]-X[0]).abs().sum(1)
+                err += 3*(X[-1]-X[0]).abs().sum(1)
+
+            elif sym == "se3": #perfect
+                err = torch.zeros_like(Y.squeeze(-1))
+
+            elif sym == "rxy2": #rxy2 perfect, t3 soft, r3soft 
+                for i in range(k):
+                    err += X[i][:,:2].pow(2).sum(1)
+
+            # elif sym == "ryz2": #ryz2 perfect, t3 soft, r3soft 
+            #     for i in range(k):
+            #         err += X[i][:,1:3].pow(2).sum(1)
+
+            # elif sym == "rxz2": #rxz2 perfect, t3 soft, r3soft 
+            #     for i in range(k):
+            #         err += X[i][:,::2].pow(2).sum(1)
+            
+            elif sym == "txy2": #txy2 perfect, t3 soft, r3soft
+                for i in range(k-1):
+                    err += (X[i][:,:2]-X[i+1][:,:2]).abs().sum(1)
+                err += 3*(X[-1][:,:2]-X[0][:,:2]).abs().sum(1)
+
+            # elif sym == "tyz2": #tyz2 perfect, t3 soft, r3soft
+            #     for i in range(k-1):
+            #         err += (X[i][:,1:3]-X[i+1][:,1:3]).abs().sum(1)
+            #     err += 3*(X[-1][:,1:3]-X[0][:,1:3]).abs().sum(1)
+
+            # elif sym == "txz2": #txz2 perfect, t3 soft, r3soft
+            #     for i in range(k-1):
+            #         err += (X[i][:,::2]-X[i+1][:,::2]).abs().sum(1)
+            #     err += 3*(X[-1][:,::2]-X[0][:,::2]).abs().sum(1)
+
             err = err.unsqueeze(-1)
             err_mean = err.mean(0).unsqueeze(0)
             err_std = err.std(0).unsqueeze(0)
             print(f"err mean {err_mean} std {err_std}")
-            if complex:
-                Y1 = torch.tanh(Y)
-                Y2 = torch.sigmoid(Y)
-                Y3 = torch.relu(Y)
-                Y = Y1+Y2-Y3
-                err1 = torch.tanh(err)
-                err2 = torch.sigmoid(err)
-                err3 = torch.relu(err)
-                err = err1+err3-err2
-            # Y = Y-noise*err
-            Y = err
+
+            Y = Y-noise*err
 
             return X, Y
         if noisy:
