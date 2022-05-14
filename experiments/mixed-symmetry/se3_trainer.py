@@ -275,7 +275,7 @@ def main(args):
             if net_name in ["hybridsoftemlp"]:
                 current_state = model.get_current_state()
                 msebystate_list = []
-                for state in range(-1, 3):
+                for state in range(-1, equivlength):
                     model.set_state(state)
                     yhat_prime = model(x)
                     msebystate_list.append(((yhat_prime-y)**2).mean())

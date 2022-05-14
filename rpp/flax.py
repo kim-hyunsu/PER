@@ -303,10 +303,10 @@ def SoftEMLP(rep_in, rep_out, groups, ch=384, num_layers=3, gnl=False):
     rep_in_list = [rep_in(g) for g in groups]
     rep_out_list = [rep_out(g) for g in groups]
     if isinstance(ch, int):
-        middle_layers = [num_layers*[sum_rep]
-                         for sum_rep in uniform_reps(ch, groups)]
+        middle_layers_list = [num_layers*[sum_rep]
+                              for sum_rep in uniform_reps(ch, groups)]
     elif isinstance(ch, Rep):
-        middle_layers = [num_layers*[ch(g)] for g in groups]
+        middle_layers_list = [num_layers*[ch(g)] for g in groups]
     else:
         middle_layers_list = [[] for _ in range(len(groups))]
         for c in ch:
@@ -317,7 +317,6 @@ def SoftEMLP(rep_in, rep_out, groups, ch=384, num_layers=3, gnl=False):
                 for i, sum_rep in enumerate(uniform_reps(c, groups)):
                     middle_layers_list[i].append(num_layers*[sum_rep])
 
-    reps = [rep_in]+middle_layers
     reps_list = [[rep_in]+middle_layers
                  for rep_in, middle_layers in zip(rep_in_list, middle_layers_list)]
     rin_list = []

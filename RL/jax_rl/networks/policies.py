@@ -9,15 +9,52 @@ import numpy as np
 
 from jax_rl.networks.common import (MLP, Parameter, Params, PRNGKey,
                                     default_init)
-from jax_rl.networks.rpp_emlp_parts import HeadlessRPPEMLP, HeadlessEMLP, parse_rep
-from emlp.nn import uniform_rep
-from rpp.flax import MixedEMLPBlock, MixedLinear, Sequential, Linear
-from emlp.reps import Rep
+from jax_rl.networks.rpp_emlp_parts import HeadlessSoftEMLP, HeadlessRPPEMLP, HeadlessEMLP, parse_rep, parse_reps
+from rpp.flax import SoftEMLPLinear,  MixedLinear,  Linear
 
 LOG_STD_MIN = -10.0
 LOG_STD_MAX = 2.0
 STD_MIN = np.exp(LOG_STD_MIN)
 STD_MAX = np.exp(LOG_STD_MAX)
+
+
+def SoftEMLPNormalTanhPolicy(state_rep, action_rep, action_std_rep, G, ch: Sequence[int],
+                             state_transform, inv_action_transform, state_dependent_std=True, small_init=True):
+    assert state_dependent_std, "only supporting one option for now"
+    state_rep = state_rep(G)
+    action_rep = action_rep(G)
+    action_std_rep = action_std_rep(
+        G) if action_std_rep is not None else action_rep
+    body_rpp = HeadlessSoftEMLP(state_rep, G, ch)
+    final_rep = parse_reps(ch, G, len(ch))[-1]
+    # mean_head = MixedLinear(final_rep, action_rep,
+    #                         init_scale=0.01 if small_init else 1.0)
+    mean_head = SoftEMLPLinear(final_rep, action_rep)
+    std_head = SoftEMLPLinear(final_rep, action_std_rep)
+    return _SoftEMLPNormalTanhPolicy(body_rpp, mean_head, std_head, state_transform, inv_action_transform)
+
+
+class _SoftEMLPNormalTanhPolicy(nn.Module):
+    body_rpp: nn.Module
+    mean_head: nn.Module
+    std_head: nn.Module
+    state_transform: callable
+    inv_action_transform: callable
+
+    @nn.compact
+    def __call__(self,
+                 observations: jnp.ndarray,
+                 temperature: float = 1.0) -> distrax.Distribution:
+        features = self.body_rpp(self.state_transform(observations))
+        means = self.inv_action_transform(self.mean_head(features))
+        log_stds = self.inv_action_transform(self.std_head(features))
+        #log_stds = jnp.clip(log_stds, LOG_STD_MIN, LOG_STD_MAX)
+        stds = jnp.clip(jax.nn.softplus(log_stds), STD_MIN, STD_MAX)
+        base_dist = distrax.MultivariateNormalDiag(
+            loc=means, scale_diag=stds * temperature)
+        # TODO: figure out how to do the action transform
+        return distrax.Transformed(distribution=base_dist,
+                                   bijector=distrax.Block(distrax.Tanh(), 1))
 
 
 def RPPNormalTanhPolicy(state_rep, action_rep, action_std_rep, G, ch: Sequence[int],
