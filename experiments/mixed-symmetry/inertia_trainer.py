@@ -45,8 +45,8 @@ def main(args):
 
     mse_list = []
     for trial in range(args.trials):
-        watermark = "{}sym_{}_eq{}_wd{}_t{}".format(
-            args.experiment, args.network, args.equiv, args.wd, trial)
+        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}".format(
+            args.axis, args.noise, args.network, args.equiv, args.wd, trial)
 
         wandb.init(
             project="Mixed Symmetry, Inertia",
@@ -106,8 +106,20 @@ def main(args):
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
                                   rpp_init=args.rpp_init)
-        elif args.network.lower() == "o2o3softmixedemlp":
+        elif args.network.lower() == "oxy2o3softmixedemlp":
             G = (Oxy2, O(3))
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oyz2o3softmixedemlp":
+            G = (Oyz2, O(3))
+            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxz2o3softmixedemlp":
+            G = (Oxz2, O(3))
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
@@ -323,7 +335,7 @@ def main(args):
             # evaluating
             net_name = args.network.lower()
             modelsearch_cond = (
-                epoch+1) % 10 == 0 and epoch < 400 and net_name in ["hybridsoftemlp"]
+                epoch+1) % 10 == 0 and net_name in ["hybridsoftemlp"]
             valid_mse = 0
             valid_msebystate_list = [0 for _ in range(statelength)]
             for x, y in validloader:
@@ -383,8 +395,15 @@ def main(args):
         mse_list.append(top_test_mse)
         print(f"Trial {trial+1}, Test MSE: {top_test_mse:.3e}")
 
-    print(mse_list)
+    # print(mse_list)
     print(f"Test MSE: {np.mean(mse_list)}±{np.std(mse_list)}")
+    f = open("./inertia_result.txt", 'a')
+    f.write(watermark)
+    for i in range (len(mse_list)):
+        f.write(f"epoch{i}:{mse_list[i]:.3e} ")
+    f.write(f'\n{watermark}')
+    f.write(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}\n")
+    f.close()
 
 
 if __name__ == "__main__":
