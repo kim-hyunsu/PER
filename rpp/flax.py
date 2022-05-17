@@ -1,6 +1,5 @@
 
 from builtins import isinstance
-from threading import enumerate
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -15,7 +14,7 @@ from flax import linen as nn
 import logging
 from emlp.nn import gated, gate_indices, uniform_rep
 from rpp.objax import reset_solcache, uniform_reps
-from typing import Union, Iterable, Optional
+from typing import Union, Iterable, Optional, List
 # def Sequential(*args):
 #     """ Wrapped to mimic pytorch syntax"""
 #     return nn.Sequential(args)
@@ -202,28 +201,52 @@ def SoftEMLPLinear(repin_list, repout_list):
         rep_b = reset_solcache(rep_b)
         Pw_list.append(rep_W.equivariant_projector())
         Pb_list.append(rep_b.equivariant_projector())
-    return _SoftEMLPLinear(Pw_list, Pb_list, cout, -1)
+
+    init_state = -jnp.ones((), dtype=np.int16)
+    return _SoftEMLPLinear(Pw_list, Pb_list, cout, init_state)
 
 
 class _SoftEMLPLinear(nn.Module):
-    Pw: LinearOperator
-    Pb: LinearOperator
+    Pw_list: List[LinearOperator]
+    Pb_list: List[LinearOperator]
     cout: int
-    state: int
+    state: jax._src.device_array.DeviceArray
 
     @nn.compact
     def __call__(self, x):
         w = self.param('w', nn.initializers.lecun_normal(),
                        (x.shape[-1], self.cout))
         b = self.param('b', nn.initializers.zeros, (self.cout,))
-        if self.state == -1:
-            return x@w + b
-        else:
-            Pw = self.Pw_list[self.state]
-            Pb = self.Pb_list[self.state]
-            W = (Pw@w.reshape(-1)).reshape(*w.shape)
-            B = Pb@b
-            return x@W + B
+        # if self.state <0:
+        #     return x@w + b
+        # else:
+        #     Pw = self.Pw_list[self.state]
+        #     Pb = self.Pb_list[self.state]
+        #     W = (Pw@w.reshape(-1)).reshape(*w.shape)
+        #     B = Pb@b
+        #     return x@W + B
+        Pw = self.Pw_list[self.state]
+        Pb = self.Pb_list[self.state]
+        W = (Pw@w.reshape(-1)).reshape(*w.shape)
+        B = Pb@b
+        mlp = self.state < 0
+        W = mlp*w + (1-mlp)*W
+        B = mlp*b + (1-mlp)*B
+        return x@W+B
+
+    def get_params(self):
+        W = self.variables['params']['w']
+        b = self.variables['params']['b']
+        return W,b
+
+    def __hash__(self):
+        return id(self)
+
+    def set_state(self, state):
+        self.state = state
+
+    def get_current_state(self):
+        return self.state
 
 
 def MixedEMLPBlock(rep_in, rep_out):
@@ -249,7 +272,7 @@ class _MixedEMLPBlock(nn.Module):
 def SoftEMLPBlock(rep_in_list, rep_out_list, gnl):
     """ Basic building block of EMLP consisting of G-Linear, biLinear,
         and gated nonlinearity. """
-    mixedlinear = MixedLinear(
+    mixedlinear = SoftEMLPLinear(
         rep_in_list, [gated(rep_out) for rep_out in rep_out_list])
     bilinear = BiLinear(gated(rep_out_list[0]), gated(rep_out_list[0]))
     nonlinearity = RPPGatedNonlinearity(
@@ -266,6 +289,11 @@ class _SoftEMLPBlock(nn.Module):
         lin = self.linear(x)
         preact = self.bilinear(lin)+lin
         return self.nonlinearity(preact)
+
+    def set_state(self, state):
+        self.linear.set_state(state)
+    def get_current_state(self):
+        return self.linear.get_current_state()
 
 
 @export
@@ -348,13 +376,10 @@ class _Sequential(nn.Module):
 
     def set_state(self, state):
         for module in self.modules:
-            if isinstance(module, _SoftEMLPBlock):
-                module = module.linear
-            module.state = state
+            module.set_state(state)
 
     def get_current_state(self):
-        module = self.modules[0].linear
-        return module.state
+        return self.modules[0].get_current_state()
 
 
 def Sequential(*layers):

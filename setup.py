@@ -14,5 +14,6 @@ setup(name="Residual Pathway Priors",
                         'emlp @ git+https://github.com/mfinzi/equivariant-MLP', 'optax', 'tqdm>=4.38',
                         'wandb', 'ml-collections', 'tensorboardX', 'flax==0.3.6', 'gym', 'gdown', 'distrax'],
       packages=['rpp'],
-      long_description=open('README.md').read(),
+      long_description=open('README.md').read()
+
       )

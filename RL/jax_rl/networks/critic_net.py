@@ -3,7 +3,7 @@
 from rpp.flax import SoftEMLP, MixedEMLP, MixedLinear, Sequential
 from emlp.reps import Rep, Scalar
 from emlp.nn import uniform_rep
-from rpp.nn.objax import uniform_reps
+from rpp.objax import uniform_reps
 from typing import Sequence, Tuple
 
 import jax.numpy as jnp
@@ -89,11 +89,11 @@ class _RPPDoubleCritic(nn.Module):
 
 
 def SoftEMLPDoubleCritic(state_rep, action_rep, G, ch: Sequence[int],
-                         state_transform, action_transform):
+                         state_transform, action_transform, gnl):
     #state_rep = state_rep(G)
     #action_rep = action_rep(G)
-    critic1 = SoftEMLP(state_rep+action_rep, Scalar, G, ch)
-    critic2 = SoftEMLP(state_rep+action_rep, Scalar, G, ch)
+    critic1 = SoftEMLP(state_rep+action_rep, Scalar, G, ch, gnl)
+    critic2 = SoftEMLP(state_rep+action_rep, Scalar, G, ch, gnl)
     return _SoftEMLPDoubleCritic(critic1, critic2, state_transform, action_transform)
 
 
@@ -114,3 +114,10 @@ class _SoftEMLPDoubleCritic(nn.Module):
         c1 = jnp.squeeze(self.critic1(inputs), -1)
         c2 = jnp.squeeze(self.critic2(inputs), -1)
         return c1, c2
+
+    def set_state(self, state):
+        self.critic1.set_state(state)
+        self.critic2.set_state(state)
+
+    def get_current_state(self):
+        return self.critic1.get_current_state()

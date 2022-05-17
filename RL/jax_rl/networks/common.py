@@ -101,3 +101,15 @@ class Model:
         with open(load_path, 'rb') as f:
             params = flax.serialization.from_bytes(self.params, f.read())
         return self.replace(params=params)
+
+    def set_state(self, state):
+        if hasattr(self.apply_fn, "set_state"):
+            self.apply_fn.set_state(state)
+        
+    def get_current_state(self):
+        current_state = None
+        if hasattr(self.apply_fn, "get_current_state"):
+            current_state =  self.apply_fn.get_current_state()
+            if current_state is None:
+                raise Exception()
+        return current_state

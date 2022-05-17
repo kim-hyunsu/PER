@@ -1,6 +1,6 @@
 from emlp.reps import Rep
 from emlp.nn import uniform_rep
-from rpp.nn.objax import uniform_reps
+from rpp.objax import uniform_reps
 from rpp.flax import MixedEMLPBlock, MixedLinear, Sequential, EMLPBlock, SoftEMLPBlock, SoftEMLPLinear
 from oil.utils.utils import Named, export
 import logging
@@ -36,12 +36,11 @@ def parse_reps(ch, groups, num_layers):
 
 
 @export
-def HeadlessSoftEMLP(rep_in, groups, ch=384, num_layers=3):
-    rep_in_list = [rep_in(g) for g in groups]
+def HeadlessSoftEMLP(rep_in, groups, ch=384, num_layers=3, gnl=False):
     middle_layers_list = parse_reps(ch, groups, num_layers)
 
     reps_list = [[rep_in]+middle_layers
-                 for rep_in, middle_layers in zip(rep_in_list, middle_layers_list)]
+                 for rep_in, middle_layers in zip(rep_in, middle_layers_list)]
     rin_list = []
     rout_list = []
     for i in range(len(reps_list[0])-1):
@@ -52,7 +51,7 @@ def HeadlessSoftEMLP(rep_in, groups, ch=384, num_layers=3):
             routs.append(reps_list[j][i+1])
         rin_list.append(rins)
         rout_list.append(routs)
-    return Sequential(*[SoftEMLPBlock(rin, rout) for rin, rout in zip(rin_list, rout_list)])
+    return Sequential(*[SoftEMLPBlock(rin, rout, gnl) for rin, rout in zip(rin_list, rout_list)])
 
 
 @export

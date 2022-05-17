@@ -9,7 +9,8 @@ import numpy as np
 
 from jax_rl.networks.common import (MLP, Parameter, Params, PRNGKey,
                                     default_init)
-from jax_rl.networks.rpp_emlp_parts import HeadlessSoftEMLP, HeadlessRPPEMLP, HeadlessEMLP, parse_rep, parse_reps
+from jax_rl.networks.rpp_emlp_parts import (
+    HeadlessSoftEMLP, HeadlessRPPEMLP, HeadlessEMLP, parse_rep, parse_reps)
 from rpp.flax import SoftEMLPLinear,  MixedLinear,  Linear
 
 LOG_STD_MIN = -10.0
@@ -19,14 +20,20 @@ STD_MAX = np.exp(LOG_STD_MAX)
 
 
 def SoftEMLPNormalTanhPolicy(state_rep, action_rep, action_std_rep, G, ch: Sequence[int],
-                             state_transform, inv_action_transform, state_dependent_std=True, small_init=True):
+                             state_transform, inv_action_transform, state_dependent_std=True, small_init=True,
+                             gnl=False):
     assert state_dependent_std, "only supporting one option for now"
-    state_rep = state_rep(G)
-    action_rep = action_rep(G)
-    action_std_rep = action_std_rep(
-        G) if action_std_rep is not None else action_rep
-    body_rpp = HeadlessSoftEMLP(state_rep, G, ch)
-    final_rep = parse_reps(ch, G, len(ch))[-1]
+    if action_std_rep is not None:
+        action_std_rep = [action_std_rep(g) for g in G]
+    else:
+        action_std_rep = [action_rep(g) for g in G]
+    state_rep = [state_rep(g) for g in G]
+    action_rep = [action_rep(g) for g in G]
+    body_rpp = HeadlessSoftEMLP(state_rep, G, ch, gnl)
+    middle_layers_list = parse_reps(ch, G, len(ch))
+    final_rep = []
+    for ele in middle_layers_list:
+        final_rep.append(ele[-1])
     # mean_head = MixedLinear(final_rep, action_rep,
     #                         init_scale=0.01 if small_init else 1.0)
     mean_head = SoftEMLPLinear(final_rep, action_rep)
@@ -55,6 +62,14 @@ class _SoftEMLPNormalTanhPolicy(nn.Module):
         # TODO: figure out how to do the action transform
         return distrax.Transformed(distribution=base_dist,
                                    bijector=distrax.Block(distrax.Tanh(), 1))
+
+    def set_state(self, state):
+        self.body_rpp.set_state(state)
+        self.mean_head.set_state(state)
+        self.std_head.set_state(state)
+    
+    def get_current_state(self):
+        return self.body_rpp.get_current_state()
 
 
 def RPPNormalTanhPolicy(state_rep, action_rep, action_std_rep, G, ch: Sequence[int],
