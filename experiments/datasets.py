@@ -233,9 +233,10 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
 
             err = 0
             if sym == "r3": #r3 perfect, t3 soft
-                for i in range(k):
+                for i in range(k-1):
                     err += X[i].pow(2).sum(1)
-
+                err += 3*X[2].pow(2).sum(1)
+                
             elif sym == "t3": #t3 perfect, r3 soft
                 for i in range(k-1):
                     err += (X[i]-X[i+1]).abs().sum(1)
@@ -245,8 +246,11 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
                 err = torch.zeros_like(Y.squeeze(-1))
 
             elif sym == "rxy2": #rxy2 perfect, t3 soft, r3soft 
-                for i in range(k):
+                # for i in range(k):
+                #     err += X[i][:,:2].pow(2).sum(1)
+                for i in range(k-1):
                     err += X[i][:,:2].pow(2).sum(1)
+                err += 3*X[2][:,:2].pow(2).sum(1)
 
             # elif sym == "ryz2": #ryz2 perfect, t3 soft, r3soft 
             #     for i in range(k):
