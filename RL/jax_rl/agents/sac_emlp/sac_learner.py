@@ -10,7 +10,7 @@ import numpy as np
 import optax
 
 from jax_rl.agents.actor_critic_temp import ActorCriticTemp
-from jax_rl.agents.sac import actor, critic, temperature
+from jax_rl.agents.sac_emlp import actor, critic, temperature
 from jax_rl.datasets import Batch
 from jax_rl.networks import critic_net, policies
 from jax_rl.networks.common import InfoDict, Model

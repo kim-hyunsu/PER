@@ -1,10 +1,10 @@
 from jax import jit, vmap
-from jax_rl.evaluation import evaluate, rpp_evaluate
+from jax_rl.evaluation import evaluate, rpp_evaluate, softemlp_evaluate
 from emlp.groups import *
 from representations import environment_symmetries
 from jax_rl.utils import make_env
 from jax_rl.datasets import ReplayBuffer
-from jax_rl.agents import AWACLearner, SACLearner
+from jax_rl.agents import AWACLearner, SACLearner, SoftSACLearner
 import os
 import random
 
@@ -14,6 +14,7 @@ from absl import app, flags
 from ml_collections import config_flags
 from tensorboardX import SummaryWriter
 import wandb
+
 import sys
 sys.path.append("../")
 
@@ -21,13 +22,15 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string('env_name', 'Ant-v2', 'Environment name.')
 flags.DEFINE_string('add_envname', '', 'Environment name.')
-flags.DEFINE_boolean('logoff', False, "No wandb")
+flags.DEFINE_boolean('logoff', False, 'No wandb')
 flags.DEFINE_string('save_dir', './tmp/', 'Tensorboard logging dir.')
 flags.DEFINE_integer('seed', 42, 'Random seed.')
 flags.DEFINE_integer('eval_episodes', 10,
                      'Number of episodes used for evaluation.')
 flags.DEFINE_integer('log_interval', 1000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 10000, 'Eval interval.')
+flags.DEFINE_integer('search_interval', 10000, 'Model search interval.')
+flags.DEFINE_boolean('gnl', False, 'gated nonlinearity')
 flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
 flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
 flags.DEFINE_integer('start_training', int(1e4),
@@ -38,9 +41,13 @@ flags.DEFINE_boolean('rpp_value', False, 'Use RPP for value function')
 flags.DEFINE_boolean('rpp_policy', True, 'Use RPP for policy function')
 flags.DEFINE_string('group', '', 'Also use RPP for value function')
 flags.DEFINE_float('equiv_wd', 1e-6, 'Policy Equivariant weight decay')
-flags.DEFINE_float('basic_wd', 1e-6, 'Policy Basic weight decay')
-flags.DEFINE_float('cequiv_wd', 0, 'Critic Equivariant weight decay')
-flags.DEFINE_float('cbasic_wd', 0, 'Critic Basic weight decay')
+flags.DEFINE_float('basic_wd', .33, 'Policy Basic weight decay')
+flags.DEFINE_string('equiv', '70', 'Policy Equivariant weight decay')
+flags.DEFINE_string('wd', '0', 'Policy Basic weight decay')
+flags.DEFINE_float('cequiv_wd', 1e-6, 'Critic Equivariant weight decay')
+flags.DEFINE_float('cbasic_wd', .33, 'Critic Basic weight decay')
+flags.DEFINE_string('cequiv', '70', 'Critic Equivariant weight decay')
+flags.DEFINE_string('cwd', '0', 'Critic Basic weight decay')
 flags.DEFINE_list('hidden_dims', [256, 256], 'Dimension of hidden layers')
 flags.DEFINE_boolean('small_init', True,
                      'Use smaller init for last policy layer')
@@ -82,7 +89,7 @@ def main(_):
     random.seed(FLAGS.seed)
 
     kwargs = dict(FLAGS.config)
-    kwargs.update(environment_symmetries[FLAGS.env_name+FLAGS.add_envname])
+    kwargs.update(environment_symmetries[FLAGS.env_name])
 
     hidden_dims = tuple(int(hd) for hd in FLAGS.hidden_dims)
     kwargs['hidden_dims'] = hidden_dims
@@ -91,8 +98,8 @@ def main(_):
     kwargs['rpp_policy'] = FLAGS.rpp_policy
     if FLAGS.group:
         kwargs['symmetry_group'] = eval(FLAGS.group)
-    kwargs['state_rep'] = kwargs['state_rep'](kwargs['symmetry_group'])
-    kwargs['action_rep'] = kwargs['action_rep'](kwargs['symmetry_group'])
+        kwargs['state_rep'] = kwargs['state_rep'](kwargs['symmetry_group'][0])
+        kwargs['action_rep'] = kwargs['action_rep'](kwargs['symmetry_group'][0])
     if FLAGS.old_rep:
         kwargs.pop('middle_rep', None)
 
@@ -106,10 +113,12 @@ def main(_):
     algo = kwargs.pop('algo')
     assert algo == 'sac', "other RL algos not yet supported"
 
-    watermark = "{}_rpp_eq{}_bs{}_ceq{}_cbs{}_g{}".format(
+    kwargs['gnl'] = FLAGS.gnl
+
+    watermark = "{}_soft_eq{}_wd{}_ceq{}_cwd{}_g{}".format(
         FLAGS.env_name+FLAGS.add_envname,
-        FLAGS.equiv_wd, FLAGS.basic_wd,
-        FLAGS.cequiv_wd, FLAGS.cbasic_wd,
+        FLAGS.equiv, FLAGS.wd,
+        FLAGS.cequiv, FLAGS.cwd,
         FLAGS.group
     )
     wandb.init(
@@ -121,17 +130,17 @@ def main(_):
     wandb.config.update(kwargs)
 
     if algo == 'sac':
-        agent = SACLearner(FLAGS.seed,
-                           env.observation_space.sample()[np.newaxis],
-                           np.asarray(env.action_space.sample())[None],
-                           actor_basic_wd=FLAGS.basic_wd,
-                           actor_equiv_wd=FLAGS.equiv_wd,
-                           critic_basic_wd=FLAGS.cbasic_wd,
-                           critic_equiv_wd=FLAGS.cequiv_wd,
-                           standardizer=replay_buffer.running_stats.standardize if FLAGS.standardize else None,
-                           clipping=FLAGS.clipping,
-                           gan_betas=FLAGS.gan_betas,
-                           tau=FLAGS.tau, **kwargs)
+        agent = SoftSACLearner(FLAGS.seed,
+                               env.observation_space.sample()[np.newaxis],
+                               np.asarray(env.action_space.sample())[None],
+                               actor_basic_wd=float(FLAGS.wd),
+                               actor_equiv_wd=[float(e) for e in FLAGS.equiv.split(',')],
+                               critic_basic_wd=float(FLAGS.cwd),
+                               critic_equiv_wd=[float(e) for e in FLAGS.cequiv.split(',')],
+                               standardizer=replay_buffer.running_stats.standardize if FLAGS.standardize else None,
+                               clipping=FLAGS.clipping,
+                               gan_betas=FLAGS.gan_betas,
+                               tau=FLAGS.tau, **kwargs)
         policy_mean_fn = jit(lambda p, x: agent.sac.actor.apply_fn.apply(
             {'params': p}, x)._distribution._loc)
     else:
@@ -139,10 +148,14 @@ def main(_):
 
     @jit
     def reprhos(x):
-        gs = kwargs['symmetry_group'].samples(x.shape[0])
+        gs = kwargs['symmetry_group'][0].samples(x.shape[0])
         ring = vmap(kwargs['state_rep'].rho_dense)(gs)
         routg = vmap(kwargs['action_rep'].rho_dense)(gs)
         return ring, routg
+
+    equivlength = len(kwargs['symmetry_group'])
+    statelength = equivlength + 1
+    top_valid_returns = [-float('inf') for _ in range(statelength)]
 
     eval_returns = []
     observation, done = env.reset(), False
@@ -200,9 +213,25 @@ def main(_):
                        eval_returns,
                        fmt=['%d', '%.1f'])
 
-            wandb.log(step=info['total']['timesteps'], data={
-                "avg_return": eval_stats['return']
+            wandb.log(step=info['total']['timesteps'],data={
+                "avg_return": eval_stats['return'],
+                "state": agent.get_current_state()
             })
+
+        if i% FLAGS.search_interval == 0:
+            current_state = agent.get_current_state()
+            stats_list = softemlp_evaluate(
+                agent, eval_env, FLAGS.eval_episodes, statelength) 
+            return_list = [stat['return'] for stat in stats_list]
+            for j in range(statelength):
+                if top_valid_returns[j] < return_list[j]:
+                    top_valid_returns[j] = return_list[j]
+            optimal_state = max(range(statelength),
+                                key=lambda idx: top_valid_returns[idx])-1
+            agent.set_state(optimal_state)
+            if current_state != optimal_state:
+                print(f"[#{i}] {'vs'.join([f'{v:.1f}' for v in return_list])}")
+                print(f"[#{i}] STATE {current_state}->{optimal_state}")
 
 
 if __name__ == '__main__':

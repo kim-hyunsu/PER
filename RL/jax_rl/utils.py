@@ -55,7 +55,10 @@ def make_env(env_name: str,
     if frame_stack > 1:
         env = wrappers.FrameStack(env, num_stack=frame_stack)
 
-    env.reset(seed=seed)
+    try:
+        env.reset(seed=seed)
+    except:
+        env.seed(seed)
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
 

@@ -1,6 +1,7 @@
 from jax import jit
 from emlp.reps import V, T, Rep
-from emlp.groups import Z, S, SO, Group
+from emlp.groups import Z, S, SO, Group, Trivial
+from emlp.reps.linear_operators import I
 from scipy.spatial.transform import Rotation
 import jax.numpy as jnp
 import numpy as np
@@ -257,6 +258,18 @@ environment_symmetries = {
         'action_space': "continuous",
         'middle_rep': 126*T(0)+55*T(1)+5*T(2),
     },
+    # 'Swimmer-v2.1': {  # Focus just on LR symmetry now, to add front back later
+    #     'state_rep': T(0)+P+(P*T(1))+(T(0)+P)**2+(P*T(1)),  # shoud vcom swap?
+    #     'state_transform': Id,
+    #     'inv_state_transform': Id,
+    #     'action_rep': P*T(1),
+    #     'action_std_rep': T(0)*T(1),
+    #     'action_transform': Id,
+    #     'inv_action_transform': Id,
+    #     'symmetry_group': Z(2)*Z(2),
+    #     'action_space': "continuous",
+    #     'middle_rep': 126*T(0)+55*T(1)+5*T(2),
+    # },
     'Walker2d-v2': {
         'state_rep': 2*T(0)+3*T(1)+3*T(0)+3*T(1),
         'state_transform': walker_state_transform,

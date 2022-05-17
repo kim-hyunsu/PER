@@ -7,6 +7,8 @@ import jax.numpy as jnp
 from jax import jit,vmap
 from functools import partial
 
+from RL.jax_rl.agents.actor_critic_temp import ActorCriticTemp
+
 def evaluate(agent: nn.Module, env: gym.Env,
              num_episodes: int) -> Dict[str, float]:
     stats = {'return': [], 'length': []}
@@ -70,3 +72,25 @@ def rpp_evaluate(agent: nn.Module,mean_fn, env: gym.Env,
         stats[k] = np.mean(v)
 
     return stats
+
+def softemlp_evaluate(agent: nn.Module, env: gym.Env,
+             num_episodes: int, statelength: int) -> Dict[str, float]:
+    stats_list = []
+    current_state = agent.get_current_state()
+    for i in range(statelength):
+        agent.set_state(i-1)
+        stats = {'return': [], 'length': []}
+        for _ in range(num_episodes):
+            observation, done = env.reset(), False
+            while not done:
+                action = agent.sample_actions(observation, temperature=0.0)
+                observation, _, done, info = env.step(action)
+            for k in stats.keys():
+                stats[k].append(info['episode'][k])
+
+        for k, v in stats.items():
+            stats[k] = np.mean(v)
+        stats_list.append(stats)
+    agent.set_state(current_state)
+
+    return stats_list

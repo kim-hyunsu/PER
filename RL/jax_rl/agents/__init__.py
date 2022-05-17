@@ -4,3 +4,4 @@ from jax_rl.agents.drq.drq_learner import DrQLearner
 # from jax_rl.agents.sac.sac_learner import SACLearner
 from jax_rl.agents.sac.sac_learner import SACLearner
 from jax_rl.agents.sac_emlp.sac_learner import SACEMLPLearner
+from jax_rl.agents.sac_softemlp.sac_learner import SoftSACLearner

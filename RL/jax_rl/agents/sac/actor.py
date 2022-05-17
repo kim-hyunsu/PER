@@ -9,8 +9,10 @@ from jax_rl.datasets import Batch
 from jax_rl.networks.common import InfoDict, Params
 import collections
 
+
 def isDict(pars):
-    return isinstance(pars, collections.Mapping)
+    return isinstance(pars, collections.abc.Mapping)
+
 
 def get_l2(pars):
     basic_l2 = 0.
@@ -27,6 +29,7 @@ def get_l2(pars):
                 equiv_l2 += (v**2).sum()
     return basic_l2, equiv_l2
 
+
 def update(sac: ActorCriticTemp,
            batch: Batch,
            basic_wd, equiv_wd) -> Tuple[ActorCriticTemp, InfoDict]:
@@ -38,7 +41,7 @@ def update(sac: ActorCriticTemp,
         q1, q2 = sac.critic(batch.observations, actions)
         q = jnp.minimum(q1, q2)
         actor_loss = (log_probs * sac.temp() - q).mean()
-        
+
         basic_l2, equiv_l2 = get_l2(actor_params)
         actor_loss = actor_loss + basic_wd * basic_l2 + equiv_wd * equiv_l2
 
