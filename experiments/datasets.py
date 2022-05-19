@@ -77,7 +77,51 @@ class ModifiedInertia(Dataset, metaclass=Named):
         g = I[axis]  # z axis
         v = (inertia*g).sum(-1)
         vgT = v[:, :, None]*g[None, None, :]
-        target = inertia + noise*vgT
+        target = inertia + noise*vgT 
+        self.Y = target.reshape(-1, 9)
+        self.rep_in = k*Scalar+k*Vector
+        self.rep_out = T(2)
+        self.symmetry = O(3)
+        self.X = self.X.numpy()
+        self.Y = self.Y.numpy()
+        self.stats = 0, 1, 0, 1  # Xmean,Xstd,Ymean,Ystd
+
+    def __getitem__(self, i):
+        return (self.X[i], self.Y[i])
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def default_aug(self, model):
+        return GroupAugmentation(model, self.rep_in, self.rep_out, self.symmetry)
+
+@export
+class SoftModifiedInertia(Dataset, metaclass=Named):
+    def __init__(self, N=1024, k=5, noise=0.3):
+        super().__init__()
+        self.dim = (1+3)*k
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim)
+        self.X = torch.randn(N, self.dim, generator=rng)
+        self.X[:, :k] = F.softplus(self.X[:, :k])  # Masses
+        mi = self.X[:, :k]
+        ri = self.X[:, k:].reshape(-1, k, 3)
+        I = torch.eye(3)
+        r2 = (ri**2).sum(-1)[..., None, None]
+        inertia = (mi[:, :, None, None] *
+                   (r2*I - ri[..., None]*ri[..., None, :])).sum(1)
+
+        g1 = I[0] 
+        v1 = (inertia*g1).sum(-1)
+        vgT1 = v1[:, :, None]*g1[None, None, :]
+        g2 = I[1] 
+        v2 = (inertia*g2).sum(-1)
+        vgT2 = v2[:, :, None]*g2[None, None, :]
+        g3 = I[2]
+        v3 = (inertia*g3).sum(-1)
+        vgT3 = v3[:, :, None]*g3[None, None, :]
+
+        target = inertia + noise*vgT1 + noise*vgT2 + noise*vgT3 
         self.Y = target.reshape(-1, 9)
         self.rep_in = k*Scalar+k*Vector
         self.rep_out = T(2)
@@ -237,6 +281,15 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
                     err += X[i].pow(2).sum(1)
                 
             elif sym == "t3": #t3 perfect, r3 soft
+                for i in range(k-1):
+                    err += (X[i]-X[i+1]).abs().sum(1)
+                err += 3*(X[-1]-X[0]).abs().sum(1)
+
+            elif sym == "r3t3soft":
+                print('r3t3soft dataset')
+                for i in range(k):
+                    err += X[i].pow(2).sum(1)
+
                 for i in range(k-1):
                     err += (X[i]-X[i+1]).abs().sum(1)
                 err += 3*(X[-1]-X[0]).abs().sum(1)

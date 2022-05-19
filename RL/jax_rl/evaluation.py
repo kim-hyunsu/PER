@@ -1,12 +1,15 @@
 from typing import Dict
-
+import sys
 import flax.linen as nn
 import gym
 import numpy as np
 import jax.numpy as jnp
 from jax import jit,vmap
 from functools import partial
-
+sys.path.append("../")  # nopep8
+sys.path.append("../../")  # nopep8
+sys.path.append("../../../")  # nopep8
+sys.path.append("../../../../")  # nopep8
 from RL.jax_rl.agents.actor_critic_temp import ActorCriticTemp
 
 def evaluate(agent: nn.Module, env: gym.Env,

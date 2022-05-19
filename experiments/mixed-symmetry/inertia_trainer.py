@@ -8,7 +8,7 @@ import objax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from datasets import Inertia, ModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
+from datasets import Inertia, ModifiedInertia, SoftModifiedInertia,RandomlyModifiedInertia, NoisyModifiedInertia
 from rpp.objax import (HybridSoftEMLP, MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
                        MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2)
 from oil.tuning.args import argupdated_config
@@ -56,7 +56,10 @@ def main(args):
         wandb.config.update(args)
 
         # Initialize dataset with 1000 examples
-        if args.noise_std == 0:
+        if args.soft == True:
+            print('soft inertia is selected')
+            dset = SoftModifiedInertia(3000, noise=args.noise)
+        elif args.noise_std == 0:
             dset = ModifiedInertia(3000, noise=args.noise, axis=args.axis)
         else:
             dset = RandomlyModifiedInertia(3000, noise_std=args.noise_std)
@@ -102,6 +105,12 @@ def main(args):
                                   rpp_init=args.rpp_init)
         elif args.network.lower() == "tripleo2softemlp":
             G = (Oxy2, Oyz2, Oxz2, O(3))
+            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxy2oyz2oxz2softemlp":
+            G = (Oxy2, Oyz2, Oxz2)
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
@@ -502,6 +511,10 @@ if __name__ == "__main__":
         "--axis",
         type=int,
         default=2 #z axis
+    )
+    parser.add_argument(
+        "--soft",
+        action="store_true"
     )
     args = parser.parse_args()
 
