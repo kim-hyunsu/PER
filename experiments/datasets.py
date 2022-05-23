@@ -121,7 +121,7 @@ class SoftModifiedInertia(Dataset, metaclass=Named):
         v3 = (inertia*g3).sum(-1)
         vgT3 = v3[:, :, None]*g3[None, None, :]
 
-        target = inertia + noise*vgT1 + noise*vgT2 + noise*vgT3 
+        target = inertia + 0.5*noise*vgT1 + noise*vgT2 + 1.5*noise*vgT3 
         self.Y = target.reshape(-1, 9)
         self.rep_in = k*Scalar+k*Vector
         self.rep_out = T(2)
@@ -279,7 +279,7 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
             if sym == "r3": #r3 perfect, t3 soft
                 for i in range(k):
                     err += X[i].pow(2).sum(1)
-                
+
             elif sym == "t3": #t3 perfect, r3 soft
                 for i in range(k-1):
                     err += (X[i]-X[i+1]).abs().sum(1)

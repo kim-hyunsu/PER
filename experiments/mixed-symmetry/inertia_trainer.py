@@ -45,8 +45,8 @@ def main(args):
 
     mse_list = []
     for trial in range(args.trials):
-        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}".format(
-            args.axis, args.noise, args.network, args.equiv, args.wd, trial)
+        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}_soft{}".format(
+            args.axis, args.noise, args.network, args.equiv, args.wd, trial, args.soft)
 
         wandb.init(
             project="Mixed Symmetry, Inertia",
@@ -367,17 +367,17 @@ def main(args):
             # optimal model search for hybridsoftemlp
             if modelsearch_cond:
                 ############### version 1 ###############
-                # optimal_state = min(range(statelength),
-                #                     key=lambda i: top_msebystate_list[i])-1
-                # reset_cond = optimal_state == -1
-                # transition_cond = model.get_current_state() == -1
-                # if reset_cond or transition_cond:
-                #     model.set_state(optimal_state)
-
-                ############### version 2 ################
                 optimal_state = min(range(statelength),
                                     key=lambda i: top_msebystate_list[i])-1
-                model.set_state(optimal_state)
+                reset_cond = optimal_state == -1
+                transition_cond = model.get_current_state() == -1
+                if reset_cond or transition_cond:
+                    model.set_state(optimal_state)
+
+                ############### version 2 ################
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # model.set_state(optimal_state)
 
             # report
             if not args.logoff:
