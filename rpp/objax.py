@@ -1189,16 +1189,18 @@ class SoftMultiEMLP(Module, metaclass=Named):
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
+            middle_layers_list = [[] for _ in range(len(groups))]
             for c in ch:
                 if isinstance(c, Rep):
-                    middle_layers_list = [c(g) for g in groups]
+                    for i, g in enumerate(groups):
+                        middle_layers_list[i].append(c(g))
                 else:
                     if extend:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups, 2)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups, 2)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
                     else:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]
@@ -1294,16 +1296,18 @@ class SoftMixedEMLP(Module, metaclass=Named):
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
+            middle_layers_list = [[] for _ in range(len(groups))]
             for c in ch:
                 if isinstance(c, Rep):
-                    middle_layers_list = [c(g) for g in groups]
+                    for i, g in enumerate(groups):
+                        middle_layers_list[i].append(c(g))
                 else:
                     if extend:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups, 2)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups, 2)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
                     else:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]
@@ -1502,16 +1506,18 @@ class MixedEMLPV2(Module, metaclass=Named):
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
+            middle_layers_list = [[] for _ in range(len(groups))]
             for c in ch:
                 if isinstance(c, Rep):
-                    middle_layers_list = [c(g) for g in groups]
+                    for i, g in enumerate(groups):
+                        middle_layers_list[i].append(c(g))
                 else:
                     if extend:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups, 2)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups, 2)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
                     else:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]
@@ -1556,16 +1562,18 @@ class HybridSoftEMLP(Module, metaclass=Named):
         elif isinstance(ch, Rep):
             middle_layers_list = [num_layers*[ch(g)] for g in groups]
         else:
+            middle_layers_list = [[] for _ in range(len(groups))]
             for c in ch:
                 if isinstance(c, Rep):
-                    middle_layers_list = [c(g) for g in groups]
+                    for i, g in enumerate(groups):
+                        middle_layers_list[i].append(c(g))
                 else:
                     if extend:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups, 2)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups, 2)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
                     else:
-                        middle_layers_list = [num_layers*[sum_rep]
-                                              for sum_rep in uniform_reps(c, groups)]
+                        for i, sum_rep in enumerate(uniform_reps(c, groups)):
+                            middle_layers_list[i].append(num_layers*[sum_rep])
 
         reps_list = [[rep_in]+middle_layers for rep_in,
                      middle_layers in zip(self.rep_in_list, middle_layers_list)]

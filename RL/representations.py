@@ -7,6 +7,47 @@ import jax.numpy as jnp
 import numpy as np
 
 
+class ProductSubRep(Rep):
+    def __init__(self, G, subgroup_id, size):
+        """   Produces the representation of the subgroup of G = G1 x G2
+              with the index subgroup_id in {0,1} specifying G1 or G2.
+              Also requires specifying the size of the representation given by G1.d or G2.d """
+        self.G = G
+        self.index = subgroup_id
+        self._size = size
+
+    def __str__(self):
+        return "V_"+str(self.G).split('x')[self.index]
+
+    def size(self):
+        return self._size
+
+    def rho(self, M):
+        # Given that M is a LazyKron object, we can just get the argument
+        return M.Ms[self.index]
+
+    def drho(self, A):
+        return A.Ms[self.index]
+
+    def __call__(self, G):
+        # adding this will probably not be necessary in a future release,
+        # necessary now because rep is __call__ed in nn.EMLP constructor
+        assert self.G == G
+        return self
+
+    def __hash__(self):
+        return hash((type(self), self.G))
+
+
+z2 = Z(2)  # left/right
+z2 = Z(2)  # font/back
+z2z2 = Z(2)*Z(2)
+
+Vz2z2 = T(1)(z2z2)
+Vz2z2._size = 2
+Sz2z2 = ProductSubRep(z2z2, 0, 1)
+
+
 class PseudoScalar(Rep):
     is_regular = False
 
@@ -258,18 +299,18 @@ environment_symmetries = {
         'action_space': "continuous",
         'middle_rep': 126*T(0)+55*T(1)+5*T(2),
     },
-    # 'Swimmer-v2.1': {  # Focus just on LR symmetry now, to add front back later
-    #     'state_rep': T(0)+P+(P*T(1))+(T(0)+P)**2+(P*T(1)),  # shoud vcom swap?
-    #     'state_transform': Id,
-    #     'inv_state_transform': Id,
-    #     'action_rep': P*T(1),
-    #     'action_std_rep': T(0)*T(1),
-    #     'action_transform': Id,
-    #     'inv_action_transform': Id,
-    #     'symmetry_group': Z(2)*Z(2),
-    #     'action_space': "continuous",
-    #     'middle_rep': 126*T(0)+55*T(1)+5*T(2),
-    # },
+    'Swimmer-v2.1': {  # Focus just on LR symmetry now, to add front back later
+        'state_rep': Sz2z2+Vz2z2+2*Sz2z2+Vz2z2+Sz2z2,  # shoud vcom swap?
+        'state_transform': Id,
+        'inv_state_transform': Id,
+        'action_rep': Vz2z2,
+        'action_std_rep': Vz2z2,
+        'action_transform': Id,
+        'inv_action_transform': Id,
+        'symmetry_group': z2z2,
+        'action_space': "continuous",
+        'middle_rep': 126*Sz2z2+55*Vz2z2,
+    },
     'Walker2d-v2': {
         'state_rep': 2*T(0)+3*T(1)+3*T(0)+3*T(1),
         'state_transform': walker_state_transform,
