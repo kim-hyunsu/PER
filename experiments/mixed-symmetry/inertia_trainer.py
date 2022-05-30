@@ -8,7 +8,7 @@ import objax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from datasets import Inertia, ModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
+from datasets import Inertia, ModifiedInertia, SoftModifiedInertia,RandomlyModifiedInertia, NoisyModifiedInertia
 from rpp.objax import (HybridSoftEMLP, MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
                        MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2)
 from oil.tuning.args import argupdated_config
@@ -45,8 +45,8 @@ def main(args):
 
     mse_list = []
     for trial in range(args.trials):
-        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}".format(
-            args.axis, args.noise, args.network, args.equiv, args.wd, trial)
+        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}_soft{}".format(
+            args.axis, args.noise, args.network, args.equiv, args.wd, trial, args.soft)
 
         wandb.init(
             project="Mixed Symmetry, Inertia",
@@ -56,7 +56,10 @@ def main(args):
         wandb.config.update(args)
 
         # Initialize dataset with 1000 examples
-        if args.noise_std == 0:
+        if args.soft == True:
+            print('soft inertia is selected')
+            dset = SoftModifiedInertia(3000, noise=args.noise)
+        elif args.noise_std == 0:
             dset = ModifiedInertia(3000, noise=args.noise, axis=args.axis)
         else:
             dset = RandomlyModifiedInertia(3000, noise_std=args.noise_std)
@@ -102,6 +105,12 @@ def main(args):
                                   rpp_init=args.rpp_init)
         elif args.network.lower() == "tripleo2softemlp":
             G = (Oxy2, Oyz2, Oxz2, O(3))
+            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxy2oyz2oxz2softemlp":
+            G = (Oxy2, Oyz2, Oxz2)
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
@@ -358,17 +367,17 @@ def main(args):
             # optimal model search for hybridsoftemlp
             if modelsearch_cond:
                 ############### version 1 ###############
-                # optimal_state = min(range(statelength),
-                #                     key=lambda i: top_msebystate_list[i])-1
-                # reset_cond = optimal_state == -1
-                # transition_cond = model.get_current_state() == -1
-                # if reset_cond or transition_cond:
-                #     model.set_state(optimal_state)
-
-                ############### version 2 ################
                 optimal_state = min(range(statelength),
                                     key=lambda i: top_msebystate_list[i])-1
-                model.set_state(optimal_state)
+                reset_cond = optimal_state == -1
+                transition_cond = model.get_current_state() == -1
+                if reset_cond or transition_cond:
+                    model.set_state(optimal_state)
+
+                ############### version 2 ################
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # model.set_state(optimal_state)
 
             # report
             if not args.logoff:
@@ -502,6 +511,10 @@ if __name__ == "__main__":
         "--axis",
         type=int,
         default=2 #z axis
+    )
+    parser.add_argument(
+        "--soft",
+        action="store_true"
     )
     args = parser.parse_args()
 

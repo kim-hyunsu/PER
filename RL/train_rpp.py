@@ -16,6 +16,9 @@ from tensorboardX import SummaryWriter
 import wandb
 import sys
 sys.path.append("../")
+sys.path.append("../../")  # nopep8
+sys.path.append("../../../")  # nopep8
+sys.path.append("../../../../")  # nopep8
 
 FLAGS = flags.FLAGS
 
