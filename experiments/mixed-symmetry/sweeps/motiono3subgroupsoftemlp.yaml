@@ -1,0 +1,37 @@
+program: train_softemlp.py
+method: random
+metric:
+  name: valid_mse.min
+  goal: minimize
+parameters:
+  network:
+    value: o3subgroupsoftemlp
+  equiv:
+    values: ["0,2,2,2", "0,5,5,5", "0,10,10,10", "0,50,50,50", "0,100,100,100", "500,500,500"]
+  wd:
+    values: [0, 0.00002]
+  gatednonlinearity:
+    values: [True, False]
+  trials:
+    value: 1 
+  rpp_init:
+    values: ["", "rpp", "halfsoft"]
+  n_transforms:
+    value: 0
+  auto_equiv:
+    value: True
+  adjust_equiv_at:
+    values: [125,250,375,450]
+  adjust_exp:
+    values: [1.,2.]
+  ch:
+    value: 128
+  lr:
+    values: [0.001, 0.0005, 0.0001, 0.00005, 0.00001]
+  
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args_no_boolean_flags}
+  

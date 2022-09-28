@@ -1,0 +1,23 @@
+program: train_softemlp.py
+method: grid
+metric:
+  name: valid_mse.min
+  goal: minimize
+parameters:
+  network:
+    values: [o3emlp, o3mixedemlp, o3subgroupsoftemlp]
+  wd:
+    value: 0.00002
+  auto_equiv:
+    value: True
+  axis:
+    values: [0,1]
+  sweep:
+    value: True
+  
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args_no_boolean_flags}
+  

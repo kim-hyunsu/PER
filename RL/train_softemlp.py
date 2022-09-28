@@ -1,7 +1,7 @@
 from jax import jit, vmap
 from jax_rl.evaluation import evaluate, rpp_evaluate, softemlp_evaluate
 from emlp.groups import *
-from representations import environment_symmetries
+from RL.representations_deprecated import environment_symmetries
 from jax_rl.utils import make_env
 from jax_rl.datasets import ReplayBuffer
 from jax_rl.agents import AWACLearner, SACLearner, SoftSACLearner

@@ -1,51 +1,66 @@
-import sys
-
+import sys  # nopep8
 sys.path.append("../trainer/")  # nopep8
 sys.path.append("../")  # nopep8
 sys.path.append("../../")  # nopep8
-
-from experiments.datasets import SyntheticSE3Dataset  # nopep8
-import os
 from tqdm import tqdm
 import argparse
 import objax
 import jax.numpy as jnp
-import pandas as pd
 import numpy as np
-import torch.nn as nn
 import torch
-from datasets import ModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
-from rpp.objax import (HybridSoftEMLP, MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
-                       MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2,
-                       MixedEMLPV2)
+from datasets import Inertia, ModifiedInertia, SoftModifiedInertia, RandomlyModifiedInertia, NoisyModifiedInertia
+from rpp.objax import (BiEMLP, HybridSoftEMLP, MixedEMLP, MixedEMLPH, MixedGroup2EMLP, MixedGroupEMLP,
+                       MixedMLPEMLP, SoftEMLP, SoftMixedEMLP, SoftMultiEMLP, WeightedEMLP, MixedGroupEMLPv2, MixedGroup2EMLPv2, MultiEMLPv2)
 from oil.tuning.args import argupdated_config
 from oil.datasetup.datasets import split_dataset
 from utils import LoaderTo
 from torch.utils.data import DataLoader
-from rpp.objax import MLP, EMLP
-from emlp.groups import SO2eR3, O2eR3, DkeR3, Trivial, SO, SL, O, Embed
-from rpp.groups import Union, SE3, TranslationGroup, RotationGroup, ExtendedEmbed
+from emlp.nn import MLP, EMLP
+from emlp.groups import SO2eR3, O2eR3, DkeR3, Trivial, SO, O, Embed
+from rpp.groups import Union, Reflect
 import wandb
 from functools import partial
-from itertools import chain
+import objax
+import distrax
 
-Oxy2 = O2eR3()
+Oxy2 = Embed(O(2), 3, slice(2))
 Oyz2 = Embed(O(2), 3, slice(1, 3))
 Oxz2 = Embed(O(2), 3, slice(0, 3, 2))
-SL3 = Embed(SL(3), 4, slice(3))
-rxy2 = ExtendedEmbed(RotationGroup(2), 4, slice(2))
-ryz2 = ExtendedEmbed(RotationGroup(2), 4, slice(1,3))
-rxz2 = ExtendedEmbed(RotationGroup(2), 4, slice(0,3,2))
-txy2 = ExtendedEmbed(TranslationGroup(2), 4, slice(2))
-tyz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(1,3))
-txz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(0,3,2))
+
+
+class EquivBayes(objax.Module):
+    def __init__(self, learning_type, initial_equiv, **kwargs):
+        self.learning_type = learning_type
+        self.params = kwargs
+        if learning_type == "map_gamma":
+            alpha = kwargs["alpha"]
+            beta = kwargs["beta"]
+            initial_equiv = (alpha/beta)*jnp.ones_like(initial_equiv)
+        elif learning_type == "map_normal":
+            initial_equiv = jnp.zeros_like(initial_equiv)
+        self.equiv = objax.TrainVar(initial_equiv)
+
+    def __call__(self, rglr):
+        if self.learning_type == "map_gamma":
+            loss = jnp.sum(self.equiv.value*rglr/2)
+            alpha = self.params["alpha"]
+            beta = self.params["beta"]
+            prior = distrax.Gamma(alpha*jnp.ones_like(rglr),
+                                  beta*jnp.ones_like(rglr))
+            loss -= prior.log_prob(self.equiv.value).sum()
+        elif self.learning_type == "map_normal":
+            loss = jnp.sum(rglr/2/(self.equiv.value+1e-3)**2)
+            sigma = self.params["sigma"]
+            prior = distrax.Normal(jnp.zeros_like(
+                rglr), sigma*jnp.ones_like(rglr))
+            loss -= prior.log_prob(self.equiv.value).sum()
+        return loss
+
+    def get_value(self):
+        return self.equiv.value
 
 
 def main(args):
-    def JIT(func):
-        if args.debug:
-            return func
-        return objax.Jit(func)
 
     num_epochs = args.epochs
     ndata = 1000+2000
@@ -55,7 +70,7 @@ def main(args):
 
     lr = args.lr
 
-    bs = args.bs
+    bs = 500
     logger = []
 
     equiv_wd = [float(wd) for wd in args.equiv_wd.split(",")]
@@ -64,149 +79,118 @@ def main(args):
 
     mse_list = []
     for trial in range(args.trials):
-        if "soft" in args.network.lower():
-            watermark = "{}sym_{}_eq{}_wd{}_gt{}_t{}".format(
-                args.sym, args.network, args.equiv, args.wd, args.gated_wd, trial)
-        else:
-            watermark = "{}sym_{}_eq{}_bs{}_gt{}_t{}".format(
-                args.sym, args.network, args.equiv_wd, args.basic_wd, args.gated_wd, trial)
+        watermark = "{}sym_{}noise_{}_eq{}_wd{}_t{}_soft{}".format(
+            args.axis, args.noise, args.network, args.equiv, args.wd, trial, args.soft)
 
         wandb.init(
-            project="Mixed Symmetry, SE(3)",
+            project="Mixed Symmetry, Inertia",
             name=watermark,
             mode="disabled" if args.logoff else "online"
         )
         wandb.config.update(args)
 
         # Initialize dataset with 1000 examples
-        dset = SyntheticSE3Dataset(
-            args.num_data, for_mlp=True if args.network.lower() == "mlp" else False,
-            noisy=args.noisy, noise=args.noise, sym=args.sym, sign=args.sign)
-        ood = SyntheticSE3Dataset(1000, for_mlp=True if args.network.lower()=="mlp" else False,
-            noisy=args.noisy, noise=args.noise, sym=args.sym, shift=args.ood_shift, sign=-args.sign)
-        split = {'train': -1, 'val': args.valid_data, 'test': 1000}
+        if args.soft == True:
+            print('soft inertia is selected')
+            dset = SoftModifiedInertia(3000, noise=args.noise)
+        elif args.noise_std == 0:
+            dset = ModifiedInertia(3000, noise=args.noise, axis=args.axis)
+        else:
+            dset = RandomlyModifiedInertia(3000, noise_std=args.noise_std)
+        split = {'train': -1, 'val': 1000, 'test': 1000}
         datasets = split_dataset(dset, splits=split)
-        ood_dataset = split_dataset(ood, splits={"ood":-1})["ood"]
         dataloaders = {k: LoaderTo(DataLoader(v, batch_size=min(bs, len(v)), shuffle=(k == 'train'),
                                               num_workers=0, pin_memory=False)) for k, v in datasets.items()}
         trainloader = dataloaders['train']
         validloader = dataloaders['val']
         testloader = dataloaders['test']
-        oodloader = LoaderTo(DataLoader(ood_dataset, batch_size=min(bs, len(ood_dataset)),
-                                        num_workers=0, pin_memory=False))
 
-        G = dset.symmetry  # SE3()
+        G = dset.symmetry  # O(3)
         if args.network.lower() == "mlp":
             args.basic_wd = [0.]
-            G = SO(3)  # just for dimension matching
             model = MLP(dset.rep_in, dset.rep_out,
-                        group=G, num_layers=3, ch=args.ch,
-                        extend=True)
+                        group=G, num_layers=3, ch=args.ch)
         elif args.network.lower() == "emlp":
             model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=3, ch=args.ch,
-                         extend=True)
-        elif args.network.lower() == "r3emlp":
-            G = RotationGroup(3)
-            model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=3, ch=args.ch,
-                         extend=True)
-        elif args.network.lower() == "t3emlp":
-            G = TranslationGroup(3)
-            model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=3, ch=args.ch,
-                         extend=True)
-        # mixedemlp = rpp
+                         group=G, num_layers=3, ch=args.ch)
+        # mixedemlp == rpp
         elif args.network.lower() == 'mixedemlp':
-            G = (SE3(), RotationGroup(3), TranslationGroup(3))
-            model = MixedEMLPV2(dset.rep_in, dset.rep_out,
-                                groups=G, num_layers=3, ch=args.ch,
-                                gnl=args.gatednonlinearity,
-                                extend=True)
-        elif args.network.lower() == 'r3mixedemlp':
-            G = (RotationGroup(3), RotationGroup(3), TranslationGroup(3))
-            model = MixedEMLPV2(dset.rep_in, dset.rep_out,
-                                groups=G, num_layers=3, ch=args.ch,
-                                extend=True)
-        elif args.network.lower() == "r3softemlp":
-            G = (RotationGroup(3),)
+            model = MixedEMLP(dset.rep_in, dset.rep_out,
+                              group=G, num_layers=3, ch=args.ch,
+                              gnl=args.gatednonlinearity)
+        elif args.network.lower() == 'o2mixedemlp':
+            G = Oxy2
+            model = MixedEMLP(dset.rep_in, dset.rep_out,
+                              group=G, num_layers=3, ch=args.ch)
+        elif args.network.lower() == 'tripleo2mixedemlp':
+            G = Union(Oxy2, Oyz2, Oxz2)
+            model = MixedEMLP(dset.rep_in, dset.rep_out,
+                              group=G, num_layers=3, ch=args.ch)
+        elif args.network.lower() == "o3softemlp":
+            G = (O(3),)
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "se3softemlp":
-            G = (SE3(),)
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "o2o3softemlp":
+            G = (Oxy2, O(3))
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "r3t3softemlp":
-            G = (RotationGroup(3), TranslationGroup(3))
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "tripleo2softemlp":
+            G = (Oxy2, Oyz2, Oxz2, O(3))
             model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "r3t3softmixedemlp":
-            G = (RotationGroup(3), TranslationGroup(3))
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxy2oyz2oxz2softemlp":
+            G = (Oxy2, Oyz2, Oxz2)
+            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
+                                  groups=G, num_layers=3, ch=args.ch,
+                                  gnl=args.gatednonlinearity,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxy2o3softmixedemlp":
+            G = (Oxy2, O(3))
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "t3r3softmixedemlp":
-            G = (TranslationGroup(3), RotationGroup(3))
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oyz2o3softmixedemlp":
+            G = (Oyz2, O(3))
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "r3se3softmixedemlp":
-            G = (RotationGroup(3), SE3())
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "oxz2o3softmixedemlp":
+            G = (Oxz2, O(3))
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
                                   gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "t3se3softmixedemlp":
-            G = (TranslationGroup(3), SE3())
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "exp:partialprojection":
+            G = (O(3), Oxy2, Oyz2, Oxz2)
             model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
                                   groups=G, num_layers=3, ch=args.ch,
-                                  gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "rxy2se3softmixedemlp":
-            G = (rxy2, SE3())
-            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
-                                  groups=G, num_layers=3, ch=args.ch,
-                                  gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "txy2se3softmixedemlp":
-            G = (txy2, SE3())
-            model = SoftMixedEMLP(dset.rep_in, dset.rep_out,
-                                  groups=G, num_layers=3, ch=args.ch,
-                                  gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=True)
-        elif args.network.lower() == "hybridsoftemlp":
-            # G = (SE3(), RotationGroup(3), TranslationGroup(3))
-            G = (SE3(), RotationGroup(3), TranslationGroup(3), rxy2, ryz2, rxz2, txy2, tyz2, txz2)
-            
+                                  gnl=True,
+                                  rpp_init=args.rpp_init)
+        elif args.network.lower() == "exp:partialprojection2":
+            G = (O(3), Oxy2, Oyz2, Oxz2)
             model = HybridSoftEMLP(dset.rep_in, dset.rep_out,
                                    groups=G, num_layers=3, ch=args.ch,
                                    gnl=args.gatednonlinearity,
-                                   rpp_init=args.rpp_init,
-                                   extend=True)
-        elif args.network.lower() == "se3subgroupsoftemlp":
-            G = (SE3(), RotationGroup(3), TranslationGroup(3))
-            model = SoftMultiEMLP(dset.rep_in, dset.rep_out,
-                                  groups=G, num_layers=3, ch=args.ch,
-                                  gnl=args.gatednonlinearity,
-                                  rpp_init=args.rpp_init,
-                                  extend=False)
+                                   rpp_init=args.rpp_init)
+        elif args.network.lower() == "hybridsoftemlp":
+            G = (O(3), Oxy2, Oyz2, Oxz2)
+            model = HybridSoftEMLP(dset.rep_in, dset.rep_out,
+                                   groups=G, num_layers=3, ch=args.ch,
+                                   gnl=args.gatednonlinearity,
+                                   rpp_init=args.rpp_init)
+        elif args.network.lower() == "bimixedemlp":
+            G = (O(3), Oxy2)
+            model = BiEMLP(dset.rep_in, dset.rep_out,
+                           groups=G, num_layers=3, ch=args.ch,
+                           gnl=args.gatednonlinearity)
         else:
             raise Exception()
 
@@ -215,26 +199,42 @@ def main(args):
         for i, eq in enumerate(args.equiv.split(",")):
             equiv_coef[i] = float(eq)
         equiv_coef = jnp.array(equiv_coef)
+        equiv = EquivBayes(args.learning_type, equiv_coef,
+                           alpha=args.param_alpha, beta=args.param_beta,
+                           sigma=args.param_sigma)
 
         if args.aug:
             assert not isinstance(G, tuple)
             model = dset.default_aug(model)
 
-        opt = objax.optimizer.Adam(model.vars())  # ,beta2=.99)
+        opt = objax.optimizer.Adam(model.vars()+equiv.vars())  # ,beta2=.99)
 
-        def cosine_schedule(init_value, current_steps, total_steps, alpha=0.0, min_value=0):
+        def cosine_schedule(init_value, current_steps, total_steps, alpha=0.0):
             cosine_decay = 0.5 * \
                 (1 + jnp.cos(jnp.pi * current_steps / total_steps))
             decayed = (1 - alpha) * cosine_decay + alpha
-            return (init_value-min_value) * decayed + min_value
+            return init_value * decayed
 
         @ objax.Jit
-        @ objax.Function.with_vars(model.vars())
+        @ objax.Function.with_vars(model.vars()+equiv.vars())
         def equiv_regularizer():
             net_name = args.network.lower()
             rglr1_list = [0 for _ in range(equivlength)]
             rglr2 = 0
-            if "softemlp" in net_name:
+            if net_name in ["exp:partialprojection2"]:
+                for i, lyr in enumerate(model.network):
+                    if i != len(model.network)-1:
+                        lyr = lyr.linear
+                    W = lyr.w.value.reshape(-1)
+                    b = lyr.b.value
+                    Pw = lyr.Pw_list[0]
+                    Pb = lyr.Pb_list[0]
+                    W1 = Pw@W
+                    b1 = Pb@b
+                    rglr1_list[0] += 0.5 * \
+                        ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
+                    rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
+            elif "softemlp" in net_name or net_name in []:
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -248,7 +248,7 @@ def main(args):
                         rglr1_list[i] += 0.5 * \
                             ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
-            elif "softmixedemlp" in net_name:
+            elif "softmixedemlp" in net_name or net_name in []:
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -264,66 +264,62 @@ def main(args):
                         rglr1_list[i] += 0.5*(Wdiff*(lyr.Pw@Wdiff)).sum() + \
                             0.5*(bdiff*(lyr.Pb@bdiff)).sum()
                     rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
-            elif "mixedemlp" in net_name:
-                for i, lyr in enumerate(model.network):
-                    if i != len(model.network)-1:
-                        lyr = lyr.linear
-                    W = lyr.Pw@lyr.w_equiv.value.reshape(-1) + \
-                        lyr.w_basic.value.reshape(-1)
-                    b = lyr.Pb@lyr.b.value + lyr.b_basic.value
-                    Pw_list = lyr.Pw_list
-                    Pb_list = lyr.Pb_list
-                    for i, (Pw1, Pb1) in enumerate(zip(Pw_list, Pb_list)):
-                        W1 = Pw1@W
-                        b1 = Pb1@b
-                        rglr1_list[i+1] += 0.5 * \
-                            ((W-W1)**2).sum() + 0.5*((b-b1)**2).sum()
-                    rglr2 += 0.5*(W**2).sum() + 0.5*(b**2).sum()
 
             return rglr1_list, rglr2
 
         @ objax.Jit
-        @ objax.Function.with_vars(model.vars())
+        @ objax.Function.with_vars(model.vars()+equiv.vars())
         def msebystate(x, y):
             net_name = args.network.lower()
             if net_name in ["hybridsoftemlp"]:
                 current_state = model.get_current_state()
                 msebystate_list = []
-                for state in range(-1, equivlength):
+                for state in range(-1, 4):
                     model.set_state(state)
                     yhat_prime = model(x)
                     msebystate_list.append(((yhat_prime-y)**2).mean())
                 model.set_state(current_state)
+            elif net_name in ["exp:partialprojection"]:
+                msebystate_list = []
+                for idx in range(0, 4):
+                    if idx != 0:
+                        proj = model.get_proj(idx)
+                        model.set_proj(proj)
+                    yhat_prime = model(x)
+                    msebystate_list.append(((yhat_prime-y)**2).mean())
+                model.reset_proj()
+            elif net_name in ["exp:partialprojection2"]:
+                msebystate_list = []
+                for idx in range(0, 4):
+                    model.set_state(idx)
+                    yhat_prime = model(x)
+                    msebystate_list.append(((yhat_prime-y)**2).mean())
+                model.set_state(-1)
             else:
                 msebystate_list = [0. for _ in range(equivlength)]
 
             return msebystate_list
 
         @ objax.Jit
-        @ objax.Function.with_vars(model.vars())
+        @ objax.Function.with_vars(model.vars()+equiv.vars())
         def mse(x, y):
             yhat = model(x)
             return ((yhat-y)**2).mean()
 
         @ objax.Jit
-        @ objax.Function.with_vars(model.vars())
-        def loss(x, y, equiv):
+        @ objax.Function.with_vars(model.vars()+equiv.vars())
+        def loss(x, y):
             """ l2 regularized MSE """
             yhat = model(x)
             mse = ((yhat-y)**2).mean()
 
             rglr = 0
             net_name = args.network.lower()
-            if "soft" in net_name:
+            if "soft" in net_name or net_name in ["exp:partialprojection2"]:
                 rglr1_list, rglr2 = equiv_regularizer()
-                for eq, rglr1 in zip(equiv, rglr1_list):
-                    rglr += eq*rglr1
+                rglr += equiv(jnp.array(rglr1_list))
                 rglr += args.wd*rglr2
-            elif "mlp" == net_name:
-                basic_l2 = sum((v.value ** 2).sum()
-                               for k, v in model.vars().items() if k.endswith('w'))
-                rglr += basic_wd[0]*basic_l2
-            elif "mixedemlp" in net_name:
+            elif "mixedemlp" in net_name or net_name in []:
                 basic_l2 = sum((v.value ** 2).sum()
                                for k, v in model.vars().items() if k.endswith('w_basic'))
                 equiv_l2 = sum((v.value ** 2).sum()
@@ -346,12 +342,12 @@ def main(args):
 
             return mse + rglr
 
-        grad_and_val = objax.GradValues(loss, model.vars())
+        grad_and_val = objax.GradValues(loss, model.vars()+equiv.vars())
 
         @ objax.Jit
-        @ objax.Function.with_vars(model.vars()+opt.vars())
-        def train_op(x, y, lr, equiv):
-            g, v = grad_and_val(x, y, equiv)
+        @ objax.Function.with_vars(model.vars()+equiv.vars()+opt.vars())
+        def train_op(x, y, lr):
+            g, v = grad_and_val(x, y)
             opt(lr=lr, grads=g)
             return v
 
@@ -373,45 +369,45 @@ def main(args):
             # equiv = jnp.zeros_like(equiv_coef)
             # equiv = equiv.at[:interval_idx].set(equiv_coef[:interval_idx])
 
-            begin = [0]+intervals[:-1]
-            end = intervals
-            interval_idx = 0
-            for i, (b, e) in enumerate(zip(begin, end)):
-                if b <= epoch < e+1:
-                    interval_idx = len(equiv_coef)-i
-
-            equiv = jnp.zeros_like(equiv_coef)
-            equiv = equiv.at[interval_idx:].set(equiv_coef[interval_idx:])
+            # different regularization for each interval
+            # begin = [0]+intervals[:-1]
+            # end = intervals
+            # interval_idx = 0
+            # for i, (b, e) in enumerate(zip(begin, end)):
+            #     if b <= epoch < e+1:
+            #         interval_idx = len(equiv_coef)-i
+            # equiv = jnp.zeros_like(equiv_coef)
+            # equiv = equiv.at[interval_idx:].set(equiv_coef[interval_idx:])
 
             contents = dict()
             contents["state"] = model.get_current_state() if hasattr(
-                model, "get_current_state") else -2
+                model, 'get_current_state') else -2
 
             # training
             train_mse = 0
-            lr = cosine_schedule(args.lr, epoch, num_epochs, min_value=args.min_lr)
+            lr = cosine_schedule(args.lr, epoch, num_epochs)
             contents["lr"] = lr
             for x, y in trainloader:
-                l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
+                l = train_op(jnp.array(x), jnp.array(y), lr)
                 train_mse += l[0]*x.shape[0]
             train_mse /= len(trainloader.dataset)
 
             # evaluating
             net_name = args.network.lower()
             modelsearch_cond = (
-                epoch+1) % 50 == 0 and net_name in ["hybridsoftemlp"]
+                epoch+1) % 10 == 0 and net_name in ["hybridsoftemlp"]
             valid_mse = 0
             valid_msebystate_list = [0 for _ in range(statelength)]
             for x, y in validloader:
-                x, y = jnp.array(x), jnp.array(y)
+                x, y = jnp.array(x),  jnp.array(y)
                 l = mse(x, y)
                 valid_mse += l*x.shape[0]
-                if modelsearch_cond:
+                if modelsearch_cond or net_name in ["exp:partialprojection", "exp:partialprojection2"]:
                     msebystate_list = msebystate(x, y)
                     for i, mse_by_state in enumerate(msebystate_list):
                         valid_msebystate_list[i] += mse_by_state*x.shape[0]
             valid_mse /= len(validloader.dataset)
-            if modelsearch_cond:
+            if modelsearch_cond or net_name in ["exp:partialprojection", "exp:partialprojection2"]:
                 for i in range(statelength):
                     valid_msebystate_list[i] /= len(validloader.dataset)
                     if top_msebystate_list[i] > valid_msebystate_list[i]:
@@ -421,62 +417,27 @@ def main(args):
 
             # optimal model search for hybridsoftemlp
             if modelsearch_cond:
-                ############### version 1 ################
-                # current_state = model.get_current_state()
-                # if current_state == -1:
-                #     optimal_state = min(range(statelength),
-                #                         key=lambda i: top_msebystate_list[i])-1
+                ############### version 1 ###############
+                # optimal_state = min(range(statelength),
+                #                     key=lambda i: top_msebystate_list[i])-1
+                # reset_cond = optimal_state == -1
+                # transition_cond = model.get_current_state() == -1
+                # if reset_cond or transition_cond:
                 #     model.set_state(optimal_state)
-                # elif top_msebystate_list[0] < top_msebystate_list[current_state+1]:
-                #     model.set_state(-1)
-
-                ############### version 1 ################
-                # current_state = model.get_current_state()
-                # if current_state == -1:
-                #     optimal_state = min(range(statelength),
-                #                         key=lambda i: top_msebystate_list[i])-1
-                #     model.set_state(optimal_state)
-                # elif top_msebystate_list[0] < top_msebystate_list[current_state+1]:
-                #     model.set_state(-1)
 
                 ############### version 2 ################
                 optimal_state = min(range(statelength),
                                     key=lambda i: top_msebystate_list[i])-1
                 model.set_state(optimal_state)
 
-                ############### version 3 ################
-                # optimal_state = min(range(statelength),
-                #                     key=lambda i: top_msebystate_list[i])-1
-                # mse_mean = sum(top_msebystate_list)/len(top_msebystate_list)
-                # mse_var = sum(
-                #     (ele-mse_mean)**2 for ele in top_msebystate_list)/len(top_msebystate_list)
-                # mse_std = jnp.sqrt(mse_var)
-                # if top_msebystate_list[optimal_state+1] <= mse_mean-0.5*mse_std:
-                #     model.set_state(optimal_state)
-
             # report
             if not args.logoff:
-                rglr1_list, rglr2 = equiv_regularizer()
-                error_list = [model.equiv_error(
-                    i,x[:32],args.n_transforms) for i in range(equivlength)]
-                true_error_list = [model.equiv_error(
-                    i, x[:32], args.n_transforms,forward=dset) for i in range(equivlength)]
-                ood_mse=0
-                for x, y in oodloader:
-                    x,y = jnp.array(x), jnp.array(y)
-                    l = mse(x,y)
-                    ood_mse += l*x.shape[0]
-                ood_mse /= len(oodloader.dataset)
-
                 contents["train_mse"] = train_mse
                 contents["valid_mse"] = valid_mse
-                contents["OOD_mse"] = ood_mse
                 for i, rglr1 in enumerate(rglr1_list):
                     contents[f"equiv_rglr_{i}"] = rglr1
-                for i, error in enumerate(error_list):
-                    contents[f"equiv_error_{i}"] = error
-                for i, true_error in enumerate(true_error_list):
-                    contents[f"true_error_{i}"] = true_error
+                for i, eq in enumerate(equiv.get_value()):
+                    contents[f"equiv_coeff_{i}"] = eq
                 contents["l2_rglr"] = rglr2
                 for i, mse_by_state in enumerate(valid_msebystate_list):
                     contents[f"mse_for_state_{i-1}"] = mse_by_state
@@ -495,18 +456,19 @@ def main(args):
 
         wandb.finish()
         mse_list.append(top_test_mse)
-        print(f"Trial {trial+1}, Test MSE: {top_test_mse:.3e} at {top_test_epoch}")
+        print(
+            f"Trial {trial+1}, Test MSE: {top_test_mse:.3e} at {top_test_epoch}")
 
-    for _mse in mse_list:
-        print(_mse)
-    print(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}")
-    f = open("./result.txt", 'a')
+    # print(mse_list)
+    print(f"Test MSE: {np.mean(mse_list)}±{np.std(mse_list)}")
+    f = open("./inertia_result.txt", 'a')
     f.write(watermark)
-    for i in range (len(mse_list)):
+    for i in range(len(mse_list)):
         f.write(f"epoch{i}:{mse_list[i]:.3e} ")
     f.write(f'\n{watermark}')
     f.write(f"Test MSE: {np.mean(mse_list):.3e}±{np.std(mse_list):.3e}\n")
     f.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="modified inertia ablation")
@@ -514,19 +476,19 @@ if __name__ == "__main__":
         "--experiment",
         type=str,
         default="unbal-",
-        help="type of network {perfect-, unbal-, mis-}",
+        help="type of network {per-, unbal-, mis-}",
     )
     parser.add_argument(
         "--basic_wd",
         type=str,
         default="1",
-        help="basic weight decay",
+        help="basic weight decay",  # 1 for mixedemlp, 0 for mlp
     )
     parser.add_argument(
         "--equiv_wd",
         type=str,
         default="1e-5",
-        help="equiv weight decay",
+        help="equiv weight decay",  # for mxiedemlp
     )
     parser.add_argument(
         "--network",
@@ -551,12 +513,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--wd",
         type=float,
-        default=0
+        default=0  # 0 or 1e-5
     )
     parser.add_argument(
         "--gated_wd",
         type=float,
-        default=1  # same with basic_wd
+        default=1.  # 0 for any softemlp, 1 for mixedemlp
     )
     parser.add_argument(
         "--aug",
@@ -588,7 +550,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ch",
         type=int,
-        default=64
+        default=384
     )
     parser.add_argument(
         "--intervals",
@@ -596,65 +558,42 @@ if __name__ == "__main__":
         default="0,0"  # asummed two groups
     )
     parser.add_argument(
-        "--noisy",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--complex",
-        action="store_true"
-    )
-    parser.add_argument(
         "--noise",
         type=float,
-        default=1
+        default=0.3
     )
     parser.add_argument(
-        "--num_data",
+        "--axis",
         type=int,
-        default=3000
+        default=2  # z axis
     )
     parser.add_argument(
-        "--valid_data",
-        type=int,
-        default=1000
+        "--soft",
+        action="store_true"
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=0.0002
+        default=1e-3
     )
     parser.add_argument(
-        "--min_lr",
-        type=float,
-        default=0
-    )
-    parser.add_argument(
-        "--bs",
-        type=int,
-        default=200
-    )
-    parser.add_argument(
-        "--cosine",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--sym",
+        "--learning_type",
         type=str,
         default=""
     )
     parser.add_argument(
-        "--ood_shift",
-        type=int,
-        default=0
+        "--param_alpha",
+        type=float,
+        default=2
     )
     parser.add_argument(
-        "--sign",
-        type=int,
-        default=0
+        "--param_beta",
+        type=float,
+        default=0.02
     )
     parser.add_argument(
-        "--n_transforms",
-        type=int,
+        "--param_sigma",
+        type=float,
         default=1
     )
     args = parser.parse_args()

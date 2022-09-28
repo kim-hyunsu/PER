@@ -33,7 +33,7 @@ config_flags.DEFINE_config_file(
     'File path to the training hyperparameter configuration.',
     lock_config=False)
 
-from representations import environment_symmetries
+from RL.representations_deprecated import environment_symmetries
 
 def main(_):
     summary_writer = SummaryWriter(
