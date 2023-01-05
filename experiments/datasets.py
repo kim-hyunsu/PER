@@ -6,8 +6,8 @@ import jax.numpy as jnp
 from emlp.reps import Scalar, Vector, T
 from torch.utils.data import Dataset
 from oil.utils.utils import export, Named, Expression, FixedNumpySeed
-from emlp.groups import SO, O, Trivial, Lorentz, RubiksCube, Cube
-from rpp.groups import SE3
+from emlp.groups import SO, O, Trivial, Lorentz, RubiksCube, Cube, Scaling
+from rpp.groups import SE3, Union
 from functools import partial
 import itertools
 from jax import vmap, jit
@@ -311,16 +311,76 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
             X.append(_X[:, begin:end])
             begin = end+1
         Y = 0
-        for i in range(self.k-1):
-            Y += ((X[i]-X[i+1])**2).sum(1)
-        Y += ((X[-1]-X[0])**2).sum(1)
+        if not _jax:
+            for i in range(self.k-1):
+                Y += torch.sqrt(((X[i]-X[i+1])**2).sum(1))
+            Y += torch.sqrt(((X[-1]-X[0])**2).sum(1))
+            Y /= self.k
+        else:
+            for i in range(self.k-1):
+                Y += jnp.sqrt(((X[i]-X[i+1])**2).sum(1))
+            Y += jnp.sqrt(((X[-1]-X[0])**2).sum(1))
+            Y /= self.k
+
         if not _jax:
             Y = Y.unsqueeze(-1)
         else:
             Y = jnp.expand_dims(Y, -1)
 
         err = 0
-        if self.sym == "r3":  # r3 perfect, t3 soft
+        if self.sym == "test":
+            Y = 0
+            if not _jax:
+                Y += (X[0]-X[1]).abs()[:, 0]
+                err = torch.zeros_like(Y)
+                Y = Y.unsqueeze(-1)
+            else:
+                Y += jnp.abs(X[0]-X[1])[:, 0]
+                err = jnp.zeros_like(Y)
+                Y = jnp.expand_dims(Y, -1)
+
+        elif self.sym == "distance":
+            # Y = 0
+            # if not _jax:
+            #     for i in range(self.k-1):
+            #         Y += (X[i]-X[i+1]).abs().sum(1)
+            #     Y += 3*(X[-1]-X[0]).abs().sum(1)
+            #     err = torch.zeros_like(Y)
+            # else:
+            #     for i in range(self.k-1):
+            #         Y += jnp.abs(X[i]-X[i+1]).sum(1)
+            #     Y += 3*jnp.abs(X[-1]-X[0]).sum(1)
+            #     err = jnp.zeros_like(Y)
+            # if not _jax:
+            #     Y = Y.unsqueeze(-1)
+            # else:
+            #     Y = jnp.expand_dims(Y, -1)
+            if not _jax:
+                err += torch.zeros_like(Y).squeeze(-1)
+            else:
+                err += jnp.squeeze(jnp.zeros_like(Y), -1)
+
+        elif self.sym == "ball":
+            # if not _jax:
+            #     for i in range(self.k):
+            #         err += torch.sqrt((X[i]**2).sum(1))
+            #     err /= self.k
+            # else:
+            #     for i in range(self.k):
+            #         err += jnp.sqrt((X[i]**2).sum(1))
+            #     err /= self.k
+            if not _jax:
+                err += torch.sqrt((X[0]**2).sum(1))
+            else:
+                err += jnp.sqrt((X[0]**2).sum(1))
+
+        elif self.sym == "l1distance":
+            if not _jax:
+                err += (X[0]-X[1]).abs()[:, 0]
+            else:
+                err += jnp.abs(X[0]-X[1])[:, 0]
+
+        elif self.sym == "r3":  # r3 perfect, t3 soft
             for i in range(self.k):
                 err += (X[i]**2).sum(1)
 
@@ -434,32 +494,40 @@ class ModifiedInertia(Dataset, metaclass=Named):
         self.X[:, k:] = self.X[:, k:] + shift
         if sign != 0:
             self.X[:, k:] = sign*torch.abs(self.X[:, k:])
-        mi = self.X[:, :k]
-        ri = self.X[:, k:].reshape(-1, k, 3)
-        I = torch.eye(3)
-        r2 = (ri**2).sum(-1)[..., None, None]
-        inertia = (mi[:, :, None, None] *
-                   (r2*I - ri[..., None]*ri[..., None, :])).sum(1)
-        if axis == -1:
-            sum_vgT = 0
-            for i in range(3):
-                g = I[i]  # z axis
-                v = (inertia*g).sum(-1)
-                vgT = v[:, :, None]*g[None, None, :]
-                sum_vgT += vgT
-            vgT = sum_vgT
-        else:
-            g = I[axis]  # z axis
-            v = (inertia*g).sum(-1)
-            vgT = v[:, :, None]*g[None, None, :]
-        target = inertia + noise*vgT
-        self.Y = target.reshape(-1, 9)
+
+        self.Y = self.func(self.X, torch)
+
         self.rep_in = k*Scalar+k*Vector
         self.rep_out = T(2)
         self.symmetry = O(3)
         self.X = self.X.numpy()
         self.Y = self.Y.numpy()
         self.stats = 0, 1, 0, 1  # Xmean,Xstd,Ymean,Ystd
+
+    def func(self, x, op):
+        mi = x[:, :self.k]
+        ri = x[:, self.k:].reshape(-1, self.k, 3)
+        I = op.eye(3)
+        r2 = (ri**2).sum(-1)[..., None, None]
+        inertia = (mi[:, :, None, None] *
+                   (r2*I - ri[..., None]*ri[..., None, :])).sum(1)
+        if self.axis == -1:
+            sum_vgT = 0
+            for i in range(3):
+                g = I[i]
+                v = (inertia*g).sum(-1)
+                vgT = v[:, :, None]*g[None, None, :]
+                if i == 0:
+                    sum_vgT -= vgT
+                elif i == 1:
+                    sum_vgT += vgT
+            vgT = sum_vgT
+        else:
+            g = I[self.axis]  # z axis
+            v = (inertia*g).sum(-1)
+            vgT = v[:, :, None]*g[None, None, :]
+        target = inertia + self.noise*vgT
+        return target.reshape(-1, 9)
 
     def __getitem__(self, i):
         return (self.X[i], self.Y[i])
@@ -469,17 +537,145 @@ class ModifiedInertia(Dataset, metaclass=Named):
 
     def __call__(self, x):  # jax.numpy
         # x: (batch_size, x_features)
-        mi = x[:, :self.k]
-        ri = x[:, self.k:].reshape(-1, self.k, 3)
-        I = jnp.eye(3)
-        r2 = (ri**2).sum(-1)[..., None, None]
-        inertia = (mi[:, :, None, None] *
-                   (r2*I-ri[..., None]*ri[..., None, :])).sum(1)
-        g = I[self.axis]
-        v = (inertia*g).sum(-1)
-        vgT = v[:, :, None]*g[None, None, :]
-        target = inertia+self.noise*vgT
-        return target.reshape(-1, 9)
+        return self.func(x, jnp)
 
     def default_aug(self, model):
         return GroupAugmentation(model, self.rep_in, self.rep_out, self.symmetry)
+
+
+@export
+class SyntheticRadiusDataset(Dataset, metaclass=Named):
+    def __init__(self, N=1024, k=3, noise=0, sym="", shift=0, sign=0):
+        super().__init__()
+        self.d = 3
+        self.k = k
+        self.dim = self.d*k
+        self.sym = sym
+        self.noise = noise
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim+int(shift))
+        self.X = torch.randn(N, self.dim, generator=rng)
+        self.X = self.X + shift
+        if sign != 0:
+            self.X = sign*torch.abs(self.X)
+        x = self.X.view(-1, k, self.d)
+        radius = torch.sqrt((x**2).sum(2))  # SO(3) perfect
+        sum_radius = radius.sum(1)
+        # SO(3) perfect Scale perfect
+        norm_radius = radius/sum_radius.unsqueeze(-1)
+        norm_x = x.sum(1)/x.sum(2).sum(1).unsqueeze(-1)  # Scale perfect
+
+        if sym == "so3-scale" or sym == "scale-so3":
+            self.Y = norm_radius
+        elif sym == "so3":
+            self.Y = norm_radius - noise*radius
+        elif sym == "scale":
+            self.Y = norm_radius - noise*norm_x
+
+        self.Y = self.Y.prod(1).unsqueeze(-1)
+
+        self.X = self.X.numpy()
+        self.Y = self.Y.numpy()
+        self.rep_in = k*Vector
+        self.rep_out = Scalar
+        self.symmetry = Union(SO(3), Scaling(3))
+
+    def __getitem__(self, i):
+        return (self.X[i], self.Y[i])
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __call__(self, x):
+        x = x.reshape(-1, self.k, self.d)
+        radius = jnp.sqrt((x**2).sum(2))
+        sum_radius = radius.sum(1)
+        norm_radius = radius/jnp.expand_dims(sum_radius, -1)
+        norm_x = x.sum(1)/jnp.expand_dims(x.sum(2).sum(1), -1)
+
+        if self.sym == "so3-scale":
+            y = norm_radius
+        elif self.sym == "so3":
+            y = norm_radius - self.noise*radius
+        elif self.sym == "scale":
+            y = norm_radius - self.noise*norm_x
+
+        y = jnp.expand_dims(jnp.product(y, 1), -1)
+        return y
+
+
+@export
+class SyntheticCosSimDataset(Dataset, metaclass=Named):
+    def __init__(self, N=1024, k=3, noise=0, sym="", shift=0, sign=0):
+
+        super().__init__()
+        self.d = 3
+        self.k = k
+        self.dim = self.d*k
+        self.sym = sym
+        self.noise = noise
+        rng = torch.Generator()
+        rng.manual_seed(N+k+self.dim+int(shift))
+        self.X = torch.randn(N, self.dim, generator=rng)
+        self.X = self.X + shift
+        if sign != 0:
+            self.X = sign*torch.abs(self.X)
+
+        self.Y = self.func(self.X, torch)
+
+        self.X = self.X.numpy()
+        self.Y = self.Y.numpy()
+        self.rep_in = k*Vector
+        self.rep_out = Scalar
+        self.symmetry = Union(SO(3), Scaling(3))
+
+    def func(self, x, op):
+        def cosinesimilarity(a, b):
+            inner = (a*b).sum(1)
+            # norm_a = op.sqrt((a**2).sum(1))
+            # norm_b = op.sqrt((b**2).sum(1))
+            if op is jnp:
+                norm_a = op.linalg.norm(a, axis=1)
+                norm_b = op.linalg.norm(b, axis=1)
+            elif op is torch:
+                norm_a = op.norm(a, dim=1)
+                norm_b = op.norm(b, dim=1)
+            return inner/(norm_a*norm_b)
+        if op is jnp:
+            x = x.reshape(-1, self.k, self.d)
+        elif op is torch:
+            x = x.view(-1, self.k, self.d)
+        sum_cossim = 0
+        for i in range(self.k-1):
+            sum_cossim += cosinesimilarity(
+                x[:, i, :], x[:, i+1, :]) / self.k
+        sum_cossim += cosinesimilarity(x[:, -1, :], x[:, 0, :])/self.k
+        mean_radius = op.sqrt((x**2).sum(2)).mean(1)
+        half = self.k//2
+        fraction = op.abs(x[:, 0:half, :]).sum(2).sum(
+            1)/op.abs(x[:, half:, :]).sum(2).sum(1)
+
+        if self.sym == "so3-scale" or self.sym == "scale-so3":
+            y = sum_cossim
+        elif self.sym == "so3":
+            y = sum_cossim - self.noise*mean_radius
+        elif self.sym == "scale":
+            y = sum_cossim - self.noise*fraction
+        elif self.sym == "none":
+            y = sum_cossim - self.noise*mean_radius + self.noise*fraction
+
+        if op is jnp:
+            y = op.expand_dims(y, -1)
+        elif op is torch:
+            y = y.unsqueeze(-1)
+
+        return y
+
+    def __getitem__(self, i):
+        return (self.X[i], self.Y[i])
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __call__(self, x):
+        return self.func(x, jnp)

@@ -1,0 +1,1 @@
+python3 train_softemlp.py --network=o3subgroupsoftemlp --sweep --ch 180 --auto_equiv --rpp_init=rpp  --trials=1 --equiv=2,2,2 --adjust_exp=10 --logoff

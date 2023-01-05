@@ -1,0 +1,1 @@
+python train_softemlp.py --network=o3subgroupsoftemlp --auto_equiv --trials=5 --adjust_exp=3 --equiv=0,0.1,0.1,0.1

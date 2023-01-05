@@ -1,0 +1,36 @@
+project: New Mixed Symmetry, cossim
+program: train_softemlp.py
+method: bayes
+metric:
+  name: test_mse
+  goal: minimize
+parameters:
+  sweep:
+    value: True
+  network:
+    value: so3scalesubgroupsoftemlp
+  sym:
+    value: none
+  wd:
+    value: 0.00002
+  trials:
+    value: 1 
+  n_transforms:
+    value: 0
+  auto_equiv:
+    value: True
+  adjust_exp:
+    value: 2.
+  lr:
+    values: [0.001, 0.0005, 0.0002]
+  noise:
+    value: 1.
+  init_equiv:
+    values: [0.5,0.2,0.1,0.05,0.02,0.01,0.005, 0.002, 0.001]
+  
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args_no_boolean_flags}
+  

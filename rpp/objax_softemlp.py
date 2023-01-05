@@ -1,5 +1,6 @@
 from scipy.special import binom
 from emlp.reps import T
+from emlp.reps.product_sum_reps import SumRep
 from emlp.reps.linear_operators import lazify
 import numpy as np
 from numpy import isin
@@ -15,6 +16,7 @@ from emlp.groups import noise2samples
 from oil.utils.utils import Named, export
 import logging
 import jax
+from torch import divide
 from rpp.groups import SE3
 import types
 
@@ -53,6 +55,65 @@ def extend_dim_mask(repin):
     return mask, value
 
 
+def get_extend_dims(repin):
+    dims_scale = []
+    dims_loc = []
+    dims_mask = []
+    begin = 0
+    if isinstance(repin, SumRep):
+        for rep, count in repin.reps.items():
+            d = rep.G.d
+            for i in range(count):
+                size = rep.size()
+                end = begin+size
+                if size == 1:
+                    dims_scale.append(-1)
+                    dims_loc.append(-1)
+                    dims_mask.append(True)
+                elif size == d:
+                    dims_scale.extend([end-1]*size)
+                    dims_loc.extend([-1]*size)
+                    dims_mask.extend([True]*(size-1)+[False])
+                elif size == d*d:
+                    dims_scale.extend([end-1]*size)
+                    loc = (np.arange(size)+begin).reshape(d, d)
+                    loc[:d-1, :d-1] = -1
+                    temp = loc[-1, -1]
+                    loc[-1, -1] = -1
+                    loc = loc.reshape(-1)
+                    dims_loc.extend(loc)
+                    loc[-1] = temp
+                    dims_mask.extend(loc == -1)
+                else:
+                    raise ValueError()
+                begin = end
+    else:
+        size = repin.size()
+        d = repin.G.d
+        if size == 1:
+            dims_scale.append(-1)
+            dims_loc.append(-1)
+            dims_mask.append(True)
+        elif size == d:
+            dims_scale.extend([size-1]*size)
+            dims_loc.extend([-1]*size)
+            dims_mask.extend([True]*(size-1)+[False])
+        elif size == d*d:
+            dims_scale.extend([size-1]*size)
+            loc = (np.arange(size)+begin).reshape(d, d)
+            loc[:d-1, :d-1] = -1
+            temp = loc[-1, -1]
+            loc[-1, -1] = -1
+            loc = loc.reshape(-1)
+            dims_loc.extend(loc)
+            loc[-1] = temp
+            dims_mask.extend(loc == -1)
+        else:
+            raise ValueError()
+
+    return jnp.array(dims_loc), jnp.array(dims_scale), jnp.array(dims_mask)
+
+
 def rng_samples(self, N, seed):
     rng = np.random.default_rng(seed)
     """ Draw N samples from the group (not necessarily Haar measure)"""
@@ -75,13 +136,29 @@ def relative_error(a, b):
 class SoftEquivNetLinear(Module):
     def __init__(self):
         super().__init__()
-        self.state = -2
+        self.init_state = -1
+        self.init_alpha = 0
+        self.state = self.init_state
+        self.alpha = self.init_alpha
 
     def set_state(self, state):
         self.state = state
 
     def get_current_state(self):
         return self.state
+
+    def perturb(self, alpha):
+        self.alpha = alpha
+
+    def letitbe(self, flag=True):
+        self.extend = not flag
+
+    def init_model(self):
+        self.set_state(self.init_state)
+        self.perturb(self.init_alpha)
+
+    def get_init(self):
+        return self.init_state, self.init_alpha
 
 
 class SoftEquivNetBlock(Module):
@@ -90,6 +167,8 @@ class SoftEquivNetBlock(Module):
         self.linear = None
         self.bilinear = None
         self.nonlinearity = None
+        self.rep_in_list = None
+        self.rep_out_list = None
 
     def __call__(self, x):
         lin = self.linear(x)
@@ -102,6 +181,18 @@ class SoftEquivNetBlock(Module):
     def get_current_state(self):
         return self.linear.get_current_state()
 
+    def perturb(self, alpha):
+        self.linear.perturb(alpha)
+
+    def letitbe(self, flag=True):
+        self.extend = not flag
+
+    def init_model(self):
+        self.linear.init_model()
+
+    def get_init(self):
+        return self.linear.get_init()
+
 
 class SoftEquivNet(Module):
     def __init__(self):
@@ -111,11 +202,11 @@ class SoftEquivNet(Module):
         self.rep_in_list = None
         self.rep_out_list = None
 
-    def get_reps_list(self, groups, rep_in_list, ch, num_layers, extend):
+    def get_reps_list(self, groups, rep_in_list, ch, num_layers, extend, maxlim_rank=2):
         if isinstance(ch, int):
             if extend:
                 middle_layers_list = [num_layers*[sum_rep]
-                                      for sum_rep in uniform_reps(ch, groups, 2)]
+                                      for sum_rep in uniform_reps(ch, groups, maxlim_rank)]
             else:
                 middle_layers_list = [num_layers*[sum_rep]
                                       for sum_rep in uniform_reps(ch, groups)]
@@ -129,7 +220,7 @@ class SoftEquivNet(Module):
                         middle_layers_list[i].append(c(g))
                 else:
                     if extend:
-                        for i, sum_rep in enumerate(uniform_reps(c, groups, 2)):
+                        for i, sum_rep in enumerate(uniform_reps(c, groups, maxlim_rank)):
                             middle_layers_list[i].append(num_layers*[sum_rep])
                     else:
                         for i, sum_rep in enumerate(uniform_reps(c, groups)):
@@ -143,6 +234,8 @@ class SoftEquivNet(Module):
             rins = []
             routs = []
             for j in range(len(groups)):
+                if j == 0:
+                    print(reps_list[j][i])
                 rins.append(reps_list[j][i])
                 routs.append(reps_list[j][i+1])
             rin_list.append(rins)
@@ -160,24 +253,47 @@ class SoftEquivNet(Module):
     def get_current_state(self):
         return self.network[0].get_current_state()
 
-    def equiv_error(self, idx, input, n_transforms, forward=None):
+    def perturb(self, alpha):
+        for lyr in self.network:
+            lyr.perturb(alpha)
+
+    def init_model(self):
+        init_state, init_alpha = self.network[0].get_init()
+        self.set_state(init_state)
+        self.perturb(init_alpha)
+
+    def letitbe(self, flag=True):
+        self.extend = not flag
+
+    def equiv_error(self, idx, input, n_transforms, forward=None, rep_in_list=None, rep_out_list=None):
         if forward is None:
             forward = self.network
         g = self.groups[idx]
         g.rng_samples = types.MethodType(rng_samples, g)
-        rep_in = self.rep_in_list[idx]
-        rep_out = self.rep_out_list[idx]
-        input_transforms = (rep_in.rho(s)
-                            for s in g.rng_samples(n_transforms, seed=0))
-        output_transforms = (rep_out.rho(s)
-                             for s in g.rng_samples(n_transforms, seed=0))
+        if rep_in_list is None:
+            rep_in_list = self.rep_in_list
+        if rep_out_list is None:
+            rep_out_list = self.rep_out_list
+        rep_in = rep_in_list[idx]
+        rep_out = rep_out_list[idx]
+        input_transforms = [rep_in.rho(s)
+                            for s in g.rng_samples(n_transforms, seed=0)]
+        output_transforms = [rep_out.rho(s)
+                             for s in g.rng_samples(n_transforms, seed=0)]
         trans_input_list = [(T@input.transpose()).transpose()
                             for T in input_transforms]
-        out1 = [forward(trans_input) for trans_input in trans_input_list]
+        trans_input_tensor = jnp.concatenate(trans_input_list, axis=0)
+        # out1 = [forward(trans_input) for trans_input in trans_input_list]
+        out1 = forward(trans_input_tensor)
         output = forward(input)
         out2 = [(T@output.transpose()).transpose() for T in output_transforms]
-        errors = [relative_error(o1, o2) for o1, o2 in zip(out1, out2)]
-        return sum(errors)/len(errors)
+        out2 = jnp.concatenate(out2, axis=0)
+        # errors = [relative_error(o1, o2) for o1, o2 in zip(out1, out2)]
+        # return sum(errors)/len(errors)
+        errors = np.sqrt(((out1-out2)**2).sum(1)) / \
+            (np.sqrt((out1**2).sum(1))+np.sqrt((out2**2).sum(1)))
+        assert errors.shape[0] == out1.shape[0]
+        return errors.mean()
 
 
 @export
@@ -361,17 +477,41 @@ def swish(x):
     return jax.nn.sigmoid(x)*x
 
 
+def clip_sigmoid(x):
+    act = jax.nn.sigmoid(x)
+    return jnp.clip(act, 0, 1)
+
+
 class RPPGatedNonlinearity(Module):
-    def __init__(self, rep):
+    def __init__(self, rep, extend=False):
         super().__init__()
         self.rep = rep
         self.w_gated = TrainVar(jnp.ones(self.rep.size())*RPP_SCALE)
+        self.extend = extend
 
     def __call__(self, values):
         gate_scalars = values[..., nn.gate_indices(self.rep)]
-        gated_activations = jax.nn.sigmoid(
-            gate_scalars) * values[..., :self.rep.size()]
+        if not self.extend:
+            gated_activations = jax.nn.sigmoid(
+                gate_scalars) * values[..., :self.rep.size()]
+        else:
+            gated_activations = clip_sigmoid(
+                gate_scalars) * values[..., :self.rep.size()]
         return gated_activations+self.w_gated.value*swish(values[..., :self.rep.size()])
+
+
+class ExtendedGatedNonlinearity(nn.GatedNonlinearity):
+    def __init__(self, rep):
+        super().__init__(rep)
+
+    def __call__(self, values):
+        gate_scalars = values[..., nn.gate_indices(self.rep)]
+        # gated_sigmoid = jnp.where(self.mask, jax.nn.sigmoid(
+        #     gate_scalars), jnp.ones_like(gate_scalars))
+        # activations = gated_sigmoid * values[..., :self.rep.size()]
+        activations = clip_sigmoid(gate_scalars) * \
+            values[..., :self.rep.size()]
+        return activations
 
 
 class MixedEMLPBlock(Module):
@@ -461,6 +601,10 @@ def uniform_reps(ch, groups, maxlim_rank=None):
     # number of tensors of each rank
     if maxlim_rank is None:
         maxlim_rank = nn.lambertW(ch, d)
+    else:
+        temp = nn.lambertW(ch, d)
+        if temp < maxlim_rank:
+            maxlim_rank = temp
     Ns = np.zeros((maxlim_rank+1,), int)
     while ch > 0:
         # compute the max rank tensor that can fit up to
@@ -469,33 +613,43 @@ def uniform_reps(ch, groups, maxlim_rank=None):
                                     for r in range(max_rank+1)], dtype=int)
         ch -= (max_rank+1)*d**max_rank  # compute leftover channels
     sum_rep_list = [[] for _ in range(len(groups))]
+    allow_dual = True if maxlim_rank is None else False
     for r, nr in enumerate(Ns):
-        allocations = binomial_allocations(nr, r, groups)
+        allocations = binomial_allocations(nr, r, groups, allow_dual)
         for i, alloc in enumerate(allocations):
             sum_rep_list[i].append(alloc)
     sum_reps = [sum(sum_rep) for sum_rep in sum_rep_list]
     return (sum_rep.canonicalize()[0] for sum_rep in sum_reps)
 
 
-def binomial_allocations(N, rank, groups):
+def binomial_allocations(N, rank, groups, allow_dual=True):
     """ Allocates N of tensors of total rank r=(p+q) into
         T(k,r-k) for k=0,1,...,r to match the binomial distribution.
         For orthogonal representations there is no
         distinction between p and q, so this op is equivalent to N*T(rank)."""
     if N == 0:
         return 0
+
+    def T_except_dual(p, q, g):
+        if allow_dual:
+            return T(p, q, g)
+        if q > 0:
+            p = p+q
+            q = 0
+        return T(p, q, g)
     n_binoms = N//(2**rank)
     n_leftover = N % (2**rank)
     even_split_list = [[] for _ in range(len(groups))]
     for k in range(rank+1):
         nums = n_binoms*int(binom(rank, k))
         for i, g in enumerate(groups):
-            even_split_list[i].append(nums*T(k, rank-k, g))
+            even_split_list[i].append(nums*T_except_dual(k, rank-k, g))
     even_splits = [sum(even_split) for even_split in even_split_list]
     rng = np.random.default_rng(N)
     ps = rng.binomial(rank, .5, n_leftover)
     # ps = np.random.binomial(rank, .5, n_leftover)
-    raggeds = [sum([T(int(p), rank-int(p), g) for p in ps]) for g in groups]
+    raggeds = [sum([T_except_dual(int(p), rank-int(p), g) for p in ps])
+               for g in groups]
     return (even_split+ragged for even_split, ragged in zip(even_splits, raggeds))
 
 
@@ -1056,6 +1210,13 @@ class SoftEMLP(SoftEquivNet):
                 rout_list[-1], self.rep_out_list, rpp_init, extend)
         )
 
+    def get_dims(self, null=False):
+        dims = 0
+        for lyr in self.network:
+            dims += lyr.get_dims(null)
+
+        return dims
+
 
 class RPP(SoftEquivNet):
     def __init__(self, rep_in, rep_out, groups,
@@ -1094,6 +1255,9 @@ class MixedRPP(SoftEquivNet):
 class SoftEMLPBlock(SoftEquivNetBlock):
     def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init, extend):
         super().__init__()
+        self.rep_in_list = rep_in_list
+        self.rep_out_list = rep_out_list
+
         self.linear = SoftEMLPLinear(
             rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], rpp_init, extend)
         self.bilinear = nn.BiLinear(
@@ -1101,10 +1265,16 @@ class SoftEMLPBlock(SoftEquivNetBlock):
         self.nonlinearity = RPPGatedNonlinearity(
             rep_out_list[0]) if not gnl else nn.GatedNonlinearity(rep_out_list[0])
 
+    def get_dims(self, null=False):
+        return self.linear.get_dims(null)
+
 
 class RPPBlock(SoftEquivNetBlock):
     def __init__(self, rep_in_list, rep_out_list, gnl, extend):
         super().__init__()
+        self.rep_in_list = rep_in_list
+        self.rep_out_list = rep_out_list
+
         self.linear = RPPLinear(
             rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], extend)
         self.bilinear = nn.BiLinear(
@@ -1116,6 +1286,9 @@ class RPPBlock(SoftEquivNetBlock):
 class MixedRPPBlock(SoftEquivNetBlock):
     def __init__(self, rep_in_list, rep_out_list, gnl, extend):
         super().__init__()
+        self.rep_in_list = rep_in_list
+        self.rep_out_list = rep_out_list
+
         self.linear = MixedRPPLinear(
             rep_in_list, [nn.gated(rep_out) for rep_out in rep_out_list], extend)
         self.bilinear = nn.BiLinear(
@@ -1128,8 +1301,8 @@ class SoftEMLPLinear(SoftEquivNetLinear):
     def __init__(self, repin_list, repout_list, rpp_init, extend):
         super().__init__()
         self.extend = extend
-        if extend:
-            self.mask, self.value = extend_dim_mask(repin_list[0])
+        # if extend:
+        #     self.mask, self.value = extend_dim_mask(repin_list[0])
         nin, nout = repin_list[0].size(), repout_list[0].size()
         init_b = objax.random.uniform((nout,))/jnp.sqrt(nout)
         init_w = orthogonal((nout, nin))
@@ -1139,9 +1312,21 @@ class SoftEMLPLinear(SoftEquivNetLinear):
         rep_bias_list = repout_list
         self.Pw_list = []
         self.Pb_list = []
-        for rep_W, rep_bias in zip(rep_W_list, rep_bias_list):
+        self.w_comple_space_dims = []
+        self.b_comple_space_dims = []
+        self.w_null_space_dims = []
+        self.b_null_space_dims = []
+        for i, (rep_W, rep_bias) in enumerate(zip(rep_W_list, rep_bias_list)):
             rep_W = reset_solcache(rep_W)
             rep_bias = reset_solcache(rep_bias)
+            # Qw = rep_W.equivariant_basis()
+            # Qb = rep_bias.equivariant_basis()
+            # Qw_comple_shape = Qw.shape[0] - Qw.shape[1]
+            # Qb_comple_shape = Qb.shape[0] - Qb.shape[1]
+            # self.w_comple_space_dims.append(Qw_comple_shape)
+            # self.b_comple_space_dims.append(Qb_comple_shape)
+            # self.w_null_space_dims.append(Qw.shape[1])
+            # self.b_null_space_dims.append(Qw.shape[1])
             self.Pw_list.append(rep_W.equivariant_projector())
             self.Pb_list.append(rep_bias.equivariant_projector())
 
@@ -1153,23 +1338,77 @@ class SoftEMLPLinear(SoftEquivNetLinear):
             init_w = 0.5*(self.Pw_list[0]@init_w.reshape(-1)
                           ).reshape(*init_w.shape) + 0.5*init_w
             init_b = 0.5*self.Pb_list[0]@init_b + 0.5*init_b
+        elif rpp_init == "auto":
+            # w_narrowest_dims = min(self.w_comple_space_dims[1:])
+            # w_widest_dims = max(self.w_comple_space_dims[1:])
+            # w_narrowest_idx = self.w_comple_space_dims.index(w_narrowest_dims)
+            # b_narrowest_dims = min(self.b_comple_space_dims[1:])
+            # b_widest_dims = max(self.b_comple_space_dims[1:])
+            # b_narrowest_idx = self.b_comple_space_dims.index(b_narrowest_dims)
+            # w_alpha = w_narrowest_dims/w_widest_dims if w_widest_dims != 0 else 0
+            # b_alpha = b_narrowest_dims/b_widest_dims if b_widest_dims != 0 else 0
+            # init_w = (1-w_alpha)*(self.Pw_list[w_narrowest_idx]@init_w.reshape(-1)
+            #                       ).reshape(*init_w.shape) + w_alpha*init_w
+            # init_b = (1-b_alpha) * \
+            #     self.Pb_list[b_narrowest_idx]@init_b + b_alpha*init_b
+            init_w = (self.Pw_list[2]@init_w.reshape(-1)
+                      ).reshape(*init_w.shape)
+            init_b = self.Pb_list[2]@init_b
 
         self.b = TrainVar(init_b)
         self.w = TrainVar(init_w)
 
         self.state = -1
+        self.alpha = 0
 
     def __call__(self, x):
-        if self.extend:
-            x = x*self.mask.reshape(1, -1)+self.value.reshape(1, -1)
+        # if self.extend:
+        #     x = x*self.mask.reshape(1, -1)+self.value.reshape(1, -1)
         if self.state == -1:  # largest group regularization
+            assert self.alpha == 0
             return x@self.w.value.T + self.b.value
         else:  # subgroup projection
             Pw = self.Pw_list[self.state]
             Pb = self.Pb_list[self.state]
             W = (Pw@self.w.value.reshape(-1)).reshape(*self.w.value.shape)
             b = Pb@self.b.value
+            if self.alpha != 0:
+                W = self.alpha*self.w.value + (1-self.alpha)*W
+                b = self.alpha*self.b.value + (1-self.alpha)*b
+            if self.state == 0:
+                print("W shape", self.w.value.shape)
+                print("W", self.w.value)
+                flat_shape = self.w.value.reshape(-1).shape[0]
+                QQT = Pw@jnp.eye(flat_shape)
+                print("QQ^T shape", QQT.shape)
+                h, w = QQT.shape
+                print("QQ^T >= 0.26", jnp.where(QQT >= 0.26))
+                print("QQ^T >= 0.26", QQT[QQT >= 0.26])
+                print("0.26>QQ^T> 0.24", jnp.where(
+                    (QQT < 0.26) & (QQT > 0.24)))
+                print("QQ^T <= 0.24", jnp.where((QQT > 1e-7) & (QQT <= 0.24)))
+
+                print("QQ^T <= -0.26", jnp.where(QQT <= -0.26))
+                print("QQ^T <= -0.26", QQT[QQT <= -0.26])
+                print("-0.26<QQ^T< -0.24", jnp.where(
+                    (QQT > -0.26) & (QQT < -0.24)))
+                print("QQ^T >= -0.24", jnp.where((QQT < -1e-7) & (QQT >= -0.24)))
+                print("QQ^TW shape", W.shape)
+                print("QQ^TW", jnp.where((W < 1e-7) &
+                      (W > -1e-7), jnp.zeros_like(W), W))
+                assert False
             return x@W.T + b
+
+    def get_dims(self, null=False):
+        self.w_null_space_dims[0] = 0
+        self.b_null_space_dims[0] = 0
+        if null:
+            w_dims = jnp.array(self.w_null_space_dims)
+            b_dims = jnp.array(self.b_null_space_dims)
+        else:
+            w_dims = jnp.array(self.w_comple_space_dims)
+            b_dims = jnp.array(self.b_comple_space_dims)
+        return w_dims+b_dims
 
 
 class RPPLinear(SoftEquivNetLinear):
@@ -1253,3 +1492,58 @@ class MixedRPPLinear(SoftEquivNetLinear):
         partialb = (partialPb@self.b_basic.value.reshape(-1)
                     ).reshape(*self.b_basic.value.shape)
         return x@(W.T + partialW.T)+b+partialb
+
+
+class TranslationNormalizer(SoftEquivNetLinear):
+    def __init__(self, repin):
+        super().__init__()
+        dims_loc, dims_scale, _ = get_extend_dims(repin)
+        self.dims_loc = jnp.expand_dims(dims_loc, 0)
+        self.dims_scale = jnp.expand_dims(dims_scale, 0)
+
+    def __call__(self, x):
+        loc = jnp.zeros_like(x)
+        scale = jnp.ones_like(x)
+        loc = jnp.where(
+            self.dims_loc == -1, loc, x[:, self.dims_loc[0]])
+        scale = jnp.where(
+            self.dims_scale == -1, scale, x[:, self.dims_scale[0]])
+        return (x-loc)/scale
+
+
+class ExtendedSoftEMLPBlock(SoftEMLPBlock):
+    def __init__(self, rep_in_list, rep_out_list, gnl, rpp_init, extend):
+        super().__init__(rep_in_list, rep_out_list, gnl, rpp_init, extend=False)
+        self.normalize1 = TranslationNormalizer(nn.gated(self.rep_out_list[0]))
+        self.normalize2 = TranslationNormalizer(self.rep_out_list[0])
+        self.nonlinearity = RPPGatedNonlinearity(
+            rep_out_list[0], extend=True) if not gnl else ExtendedGatedNonlinearity(rep_out_list[0])
+
+    def __call__(self, x):
+        lin = self.linear(x)
+        preact = self.bilinear(lin) + lin
+        # return self.normalize2(self.nonlinearity(preact))
+        return self.nonlinearity(preact)
+
+
+class ExtendedSoftEMLP(SoftEMLP):
+    def __init__(self, rep_in, rep_out, groups,
+                 ch=384, num_layers=3, gnl=False, rpp_init=False, extend=False):
+        self.rep_in_list = [rep_in(g) for g in groups]
+        self.rep_out_list = [rep_out(g) for g in groups]
+        self.groups = groups
+
+        rin_list, rout_list = self.get_reps_list(
+            groups, self.rep_in_list, ch, num_layers, extend=True, maxlim_rank=1)
+
+        # Temporary
+        self.rin_list = rin_list
+        self.rout_list = rout_list
+
+        self.network = nn.Sequential(
+            *[ExtendedSoftEMLPBlock(rins, routs, gnl, rpp_init, extend)
+                for rins, routs in zip(rin_list, rout_list)],
+            SoftEMLPLinear(
+                rout_list[-1], self.rep_out_list, rpp_init, extend=False)
+        )
+        self.letitbe()

@@ -4,7 +4,7 @@ from scipy.linalg import expm
 from oil.utils.utils import Named, export
 import jax
 import jax.numpy as jnp
-from emlp.groups import Group
+from emlp.groups import Group, Scaling
 
 
 @export
@@ -59,13 +59,19 @@ class TranslationGroup(Group):
         d = n+1
         self.lie_algebra = np.zeros((n, d, d))
         for i in range(n):
-            self.lie_algebra[i, -1, i] = 1
+            self.lie_algebra[i, i, -1] = 1
+            # self.lie_algebra[i, -1, i] = 1
         super().__init__(n)
 
 
 @export
 def SE3():
     return Union(RotationGroup(3), TranslationGroup(3))
+
+
+@export
+def SE2():
+    return Union(RotationGroup(2), TranslationGroup(2))
 
 
 @export
