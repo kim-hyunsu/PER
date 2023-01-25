@@ -1334,10 +1334,34 @@ class SoftEMLPLinear(SoftEquivNetLinear):
             init_w = (self.Pw_list[0]@init_w.reshape(-1)
                       ).reshape(*init_w.shape) + RPP_SCALE*init_w
             init_b = self.Pb_list[0]@init_b + RPP_SCALE*init_b
+        if rpp_init == "rpp1":
+            init_w = (self.Pw_list[1]@init_w.reshape(-1)
+                      ).reshape(*init_w.shape) + RPP_SCALE*init_w
+            init_b = self.Pb_list[1]@init_b + RPP_SCALE*init_b
+        if rpp_init == "rpp2":
+            init_w = (self.Pw_list[2]@init_w.reshape(-1)
+                      ).reshape(*init_w.shape) + RPP_SCALE*init_w
+            init_b = self.Pb_list[2]@init_b + RPP_SCALE*init_b
+        if rpp_init == "rpp3":
+            init_w = (self.Pw_list[3]@init_w.reshape(-1)
+                      ).reshape(*init_w.shape) + RPP_SCALE*init_w
+            init_b = self.Pb_list[3]@init_b + RPP_SCALE*init_b
         elif rpp_init == "halfsoft":
             init_w = 0.5*(self.Pw_list[0]@init_w.reshape(-1)
                           ).reshape(*init_w.shape) + 0.5*init_w
             init_b = 0.5*self.Pb_list[0]@init_b + 0.5*init_b
+        elif rpp_init == "halfsoft1":
+            init_w = 0.5*(self.Pw_list[1]@init_w.reshape(-1)
+                          ).reshape(*init_w.shape) + 0.5*init_w
+            init_b = 0.5*self.Pb_list[1]@init_b + 0.5*init_b
+        elif rpp_init == "halfsoft2":
+            init_w = 0.5*(self.Pw_list[2]@init_w.reshape(-1)
+                          ).reshape(*init_w.shape) + 0.5*init_w
+            init_b = 0.5*self.Pb_list[2]@init_b + 0.5*init_b
+        elif rpp_init == "halfsoft3":
+            init_w = 0.5*(self.Pw_list[3]@init_w.reshape(-1)
+                          ).reshape(*init_w.shape) + 0.5*init_w
+            init_b = 0.5*self.Pb_list[3]@init_b + 0.5*init_b
         elif rpp_init == "auto":
             # w_narrowest_dims = min(self.w_comple_space_dims[1:])
             # w_widest_dims = max(self.w_comple_space_dims[1:])

@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 from emlp.groups import SO, O, Embed, Scaling
 from rpp.groups import Union, SE3, TranslationGroup, RotationGroup, ExtendedEmbed, Reflect
 import wandb
+from datetime import datetime
 
 from key import WANDB_API_KEY
 os.environ["WANDB_API_KEY"] = WANDB_API_KEY
@@ -950,6 +951,7 @@ def main(args):
         train_length = None
         valid_length = None
         test_length = None
+        checkpoint_path = None
 
         def reporting(info):
             test_mse_updated = info["test_mse_updated"]
@@ -1091,40 +1093,42 @@ def main(args):
                 test_mse_updated = True
                 top_test_epoch = epoch
                 top_mse = valid_mse
+                if checkpoint_path is None:
+                    now = datetime.now()
+                    date_time_str = now.strftime(f"%Y%m%d%H%M%S")
+                    checkpoint_name = f"{dataset_name}{net_name}{date_time_str}"
+                    checkpoint_path = f"checkpoints/{checkpoint_name}.npz"
+                objax.io.save_var_collection(checkpoint_path, model.vars())
 
-                test_length = 0
-                test_mse = 0
-                for x, y in testloader:
-                    x, y = jnp.array(x), jnp.array(y)
-                    if data != "motion":
-                        l = mse(x, y)
-                    else:
-                        l = unnormalized_ade(x, y)
-                    test_length += x.shape[0]
-                    test_mse += l*x.shape[0]
-                # test_mse /= lengths["test"]
-                test_mse /= test_length
-                top_test_mse = test_mse
-                wandb.summary["test_mse"] = np.array(test_mse)
-                wandb.summary["top_test_epoch"] = top_test_epoch
+        objax.io.load_var_collection(checkpoint_path, model.vars())
+        test_length = 0
+        test_mse = 0
+        for x, y in testloader:
+            x, y = jnp.array(x), jnp.array(y)
+            if data != "motion":
+                l = mse(x, y)
+            else:
+                l = unnormalized_ade(x, y)
+            test_length += x.shape[0]
+            test_mse += l*x.shape[0]
+        # test_mse /= lengths["test"]
+        test_mse /= test_length
+        top_test_mse = test_mse
+        wandb.summary["test_mse"] = np.array(test_mse)
+        wandb.summary["top_test_epoch"] = top_test_epoch
 
-                if ood is not None:
-                    ood_length = 0
-                    ood_mse = 0
-                    for x, y in oodloader:
-                        x, y = jnp.array(x), jnp.array(y)
-                        l = mse(x, y)
-                        ood_length += x.shape[0]
-                        ood_mse += l*x.shape[0]
-                    # ood_mse /= lengths["ood"]
-                    ood_mse /= ood_length
-                    top_ood_mse = ood_mse
-                    wandb.summary["OOD_mse"] = np.array(ood_mse)
-                # save model
-                # if epoch > 3000 or (epoch+1) % 500 == 0:
-                #     objax.io.save_var_collection('./{}.{}'.format(
-                #         watermark.replace(".", "dot"), "npz"
-                #     ), model.vars())
+        if ood is not None:
+            ood_length = 0
+            ood_mse = 0
+            for x, y in oodloader:
+                x, y = jnp.array(x), jnp.array(y)
+                l = mse(x, y)
+                ood_length += x.shape[0]
+                ood_mse += l*x.shape[0]
+            # ood_mse /= lengths["ood"]
+            ood_mse /= ood_length
+            top_ood_mse = ood_mse
+            wandb.summary["OOD_mse"] = np.array(ood_mse)
 
         wandb.finish()
         mse_list.append(top_test_mse)
@@ -1231,16 +1235,7 @@ if __name__ == "__main__":
             "se3": 10000,
             "cossim": 2000,
             "motion": 500
-        }[dataset_name] if dataset_name != "motion" else {
-            "symm_scale_aware": 500,
-            "inc_symm_scale_aware": 500,
-            "symm_scale_aware2": 500,
-            "inc_symm_scale_aware2": 500,
-            "scale_aware": 750,
-            "inc_scale_aware": 750,
-            "symm_aware": 500,
-            "inc_symm_aware": 500,
-        }[normal_type]
+        }[dataset_name]
     )
     parser.add_argument(
         "--trials",
@@ -1364,7 +1359,7 @@ if __name__ == "__main__":
             "inertia": 500,
             "se3": 200,
             "cossim": 200,
-            "motion": 256
+            "motion": 128
         }[dataset_name]
     )
     parser.add_argument(

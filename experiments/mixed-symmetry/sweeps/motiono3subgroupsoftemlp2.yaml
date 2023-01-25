@@ -9,26 +9,28 @@ parameters:
     value: True
   network:
     value: o3subgroupsoftemlp
-  lr:
-    value: 0.0002
   epochs:
-    value: 500
+    value: 750
   init_equiv:
-    values: [0.01, 0.05, 0.1, 0.2, 0.5, 1.]
+    values: [0.2, 0.5, 1., 2., 5., 10., 50., 100.]  # [0.05,0.1,0.2,0.3,0.4,0.5,1.,2.,5.]
   trials:
     value: 1 
   wd:
-    values: [0.00002, 0.000002, 0]
+    values: [0.0002, 0.00002, 0.000002, 0]
   n_transforms:
     value: 0
   auto_equiv:
     value: True
   rpp_init:
-    values: [halfsoft,  ""]
-  ch:
-    value: 384
+    value: ""  # halfsoft
+  gatednonlinearity:
+    values: [True, False]
+  adjust_equiv_at:
+    values: [25, 50, 75, 100, 125]
   adjust_exp:
     values: [2,5]
+  lr:
+    values: [0.001, 0.0002]
   
 command:
   - ${env}

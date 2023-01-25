@@ -1,1 +1,3 @@
-python3 train_softemlp.py --network=o3subgroupsoftemlp --sweep --ch 180 --auto_equiv --rpp_init=rpp  --trials=1 --equiv=2,2,2 --adjust_exp=10 --logoff
+NORMAL_TYPE=symm_aware python train_softemlp.py --network=o3o2emlp --sweep
+NORMAL_TYPE=symm_scale_aware python train_softemlp.py --network=o3subgroupsoftemlp --sweep --auto_equiv
+NORMAL_TYPE=scale_aware python train_softemlp.py --network=o3subgroupsoftemlp --sweep --auto_equiv

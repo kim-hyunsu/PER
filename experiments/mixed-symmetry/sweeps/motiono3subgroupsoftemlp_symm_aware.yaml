@@ -1,4 +1,4 @@
-project: New Mixed Symmetry, inertia
+project: New Mixed Symmetry, motion
 program: train_softemlp.py
 method: bayes
 metric:
@@ -9,22 +9,30 @@ parameters:
     value: True
   network:
     value: o3subgroupsoftemlp
-  wd:
-    value: 0.00002
+  epochs:
+    values: [500,750]
+  init_equiv:
+    values: [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.]
   trials:
     value: 1 
   n_transforms:
     value: 0
   auto_equiv:
     value: True
+  rpp_init:
+    value: halfsoft
+  gatednonlinearity:
+    values: [True, False]
   adjust_equiv_at:
-    values: [1000,2000,3000,4000,5000,6000,7000]
+    values: [50, 100]
   adjust_exp:
-    value: 2.
+    values: [2,5]
+  bs:
+    values: [32,128]
   lr:
-    values: [0.001,0.002,0.0005]
-  init_equiv:
-    values: [25,50,75,100,125,150,175,200]
+    value: 0.0002
+  early_stop:
+    values: [True,False]
   
 command:
   - ${env}

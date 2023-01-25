@@ -1,18 +1,12 @@
-# residual-pathway-priors
+# Projection-based Equivariance Regularizer
 
-# Installation instructions
-To run the scripts you will instead need to clone the repo and install it locally which you can do with
+# How to run training for Waymo Open Dataset
 ```bash
-git clone https://github.com/mfinzi/residual-pathway-priors.git
-cd residual-pathway-priors
 pip install -e .
+cd experiments/mixed-symmetry
+export WANDB_API_KEY=your_wandb_api_key
+export SOFT_DATASET=motion
+export WAYMO_PATH=/path/to/waymo/open/dataset
+export NORMAL_TYPE=symm_aware
+python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv
 ```
-
-# Experimental results
-- To reproduce the reinforcment learning results from the paper, see the `RL/` directory.
-- To reproduce the results in cases with exact symmetries (Figure 2a), see `experiments/perfect-symmetry/`
-- To reproduce the results in cases with approximate symmetries (Figures 2b & 7), see `experiments/prior-var-ablation/`
-- To reproduce the results in cases with mis-specified symmetries (Figure 2c), see `experiments/misspec-symmetry/`
-- To reproduce the UCI results in Table 1, see `experiments/UCI/`
-- To reproduce the CIFAR-10 resultsin Table 1, see `experiments/cifar/`
-

@@ -7,6 +7,9 @@ from tqdm import tqdm
 
 tpu_name = os.environ.get("TPU_NAME")
 data_path = os.environ.get("WAYMO_PATH")
+normal_type = os.environ.get("NORMAL_TYPE")
+print(f"$WAYMO_PATH={data_path}")
+print(f"$NORMAL_TYPE={normal_type}")
 
 
 if tpu_name is not None:
@@ -260,18 +263,115 @@ LENGTH = {
 # s = 1662
 # MEAN = [483, -547, -14]
 # STD = [s, s, s]
-##### gather and z diff 0.1####
+##### centering and z diff 0.1####
 # s = 4.8
 # MEAN = [0, 0, 0]
 # STD = [s, s, s]
-##### z diff 0.1 x diff y diff 5
+# z diff 0.1 x diff y diff 5
 # s = 1.38
 # MEAN = [0, 0, 0]
 # STD = [s, s, s]
-##### discriminative gathering [1,1,0.993] ###
-s = 1.307
-MEAN = [0, 0, -0.231]
-STD = [s, s, s]
+##### discriminative centering [1,1,0.993] ###
+# s = 1.307
+# MEAN = [0, 0, -0.231]
+# STD = [s, s, s]
+##### discriminative normalizing ####
+# MEAN = [0,0,0]
+# STD = [1.23,1.34,0.05]
+##### non-discriminative normalizing ###
+# s = 1.051
+# MEAN = [0,0,0]
+# STD = [s,s,s]
+
+# NORMAL = dict(
+#     scale_aware=dict(
+#         mean=[0,0,0],
+#         std=[1.23,1.34,0.05],
+#         traj_mean_scale=[1,1,1]
+#     ),
+#     symm_aware=dict(
+#         mean=[0,0,0],
+#         std=[1.05,1.05,1.05],
+#         traj_mean_scale=[1,1,1]
+#     ),
+#     symm_scale_aware=dict(
+#         mean=[0,0,-0.23],
+#         std=[1.31,1.31,1.31],
+#         traj_mean_scale=[1,1,0.993]
+#     )
+# )
+NORMAL = dict(
+    scale_aware=dict(
+        mean=[0, 0, 0],
+        std=[1.23, 1.34, 0.05],  # ->[1.23, 1.34, 0.1] ?
+        traj_mean_scale=[1, 1, 1],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.05
+    ),
+    symm_aware=dict(
+        mean=[0, 0, 0],
+        std=[1.05, 1.05, 1.05],
+        traj_mean_scale=[1, 1, 1],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.05
+    ),
+    symm_scale_aware=dict(
+        mean=[0, 0, -0.23],
+        std=[1.31, 1.31, 1.31],
+        traj_mean_scale=[1, 1, 0.993],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.05
+    ),
+    symm_scale_aware2=dict(
+        mean=[0, 0, 5.77],
+        std=[3.02, 3.02, 3.02],
+        traj_mean_scale=[1, 1, 0.993],
+        traj_mean_bias=[0, 0, -6],
+        horizon=False,
+        lowerbound=0.05
+    ),
+    inc_scale_aware=dict(
+        mean=[0, 0, 0],  # ele_mean
+        std=[1.57, 1.77, 0.18],  # ele_std -> [1.57,1.77,0.18] ?
+        traj_mean_scale=[1, 1, 1],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.1
+    ),
+    inc_symm_aware=dict(
+        mean=[0, 0, 0],  # mean
+        std=[1.37, 1.37, 1.37],  # std
+        traj_mean_scale=[1, 1, 1],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.1
+    ),
+    inc_symm_scale_aware=dict(
+        mean=[0, 0, 0],
+        std=[1.50, 1.50, 1.50],
+        traj_mean_scale=[1, 1, 0.993],
+        traj_mean_bias=[0, 0, 0],
+        horizon=False,
+        lowerbound=0.1
+    ),
+    inc_symm_scale_aware2=dict(
+        mean=[0, 0, 5.79],
+        std=[3.16, 3.16, 3.16],
+        traj_mean_scale=[1, 1, 0.993],
+        traj_mean_bias=[0, 0, -6],
+        horizon=False,
+        lowerbound=0.1
+    ),
+)
+MEAN = NORMAL[normal_type]["mean"]
+STD = NORMAL[normal_type]["std"]
+TRAJ_MEAN_SCALE = NORMAL[normal_type]["traj_mean_scale"]
+TRAJ_MEAN_BIAS = NORMAL[normal_type]["traj_mean_bias"]
+HORIZON = NORMAL[normal_type]["horizon"]
+LOWERBOUND = NORMAL[normal_type]["lowerbound"]
 
 
 def parse_tf_example(tf_example):
@@ -314,7 +414,8 @@ def collect_last(data):
     total_length = 24
     count = tf.reduce_sum(valid_mask[:, :total_length], axis=1)
     mask = count == total_length
-    vector = tf.boolean_mask(vector[:, :total_length, -3:], mask) # index -3 filter "x","y","z"
+    # index -3 filter "x","y","z"
+    vector = tf.boolean_mask(vector[:, :total_length, -3:], mask)
     # vector = tf.boolean_mask(vector[:, :total_length:2, -3:], mask) # index -3 filter "x","y","z"
     diff = (vector[:, 0, :]-vector[:, 5, :])**2
     # diff = (vector[:, 0, -1]-vector[:, 5, -1])**2
@@ -328,8 +429,9 @@ def collect_last(data):
     mask = mask1 & mask2
     vector = tf.boolean_mask(vector, mask)
 
-    vector = tf.concat((vector[:,:6,:], vector[:,-6:,:]), axis=1)
+    vector = tf.concat((vector[:, :6, :], vector[:, -6:, :]), axis=1)
     return vector
+
 
 def collect(data):
     """
@@ -344,20 +446,28 @@ def collect(data):
     total_length = 24
     count = tf.reduce_sum(valid_mask[:, :total_length], axis=1)
     mask = count == total_length
-    vector = tf.boolean_mask(vector[:, :total_length:2, -3:], mask) # index -3 filter "x","y","z"
+    # index -3 filter "x","y","z"
+    vector = tf.boolean_mask(vector[:, :total_length:2, -3:], mask)
     xdiff = (vector[:, 0, 0]-vector[:, 5, 0])**2
     ydiff = (vector[:, 0, 1]-vector[:, 5, 1])**2
     zdiff = (vector[:, 0, 2]-vector[:, 5, 2])**2
     xactive = tf.math.sqrt(xdiff)
     yactive = tf.math.sqrt(ydiff)
     zactive = tf.math.sqrt(zdiff)
-    mask = (zactive > 0.05) & (xactive < 5) & (yactive<5)
+    # lowerbound = xactive if HORIZON else zactive
+    lowerbound = tf.where(HORIZON, xactive, zactive)
+    mask = (lowerbound > LOWERBOUND) & (xactive < 5) & (yactive < 5)
     vector = tf.boolean_mask(vector, mask)
 
-    vector = tf.concat((vector[:,:6,:], vector[:,-6:,:]), axis=1)
+    vector = tf.concat((vector[:, :6, :], vector[:, -6:, :]), axis=1)
     return vector
 
+# def normalize(data, normal_type):
+
+
 def normalize(data):
+    # MEAN = NORMAL[normal_type]["mean"]
+    # STD = NORMAL[normal_type]["std"]
     mean = tf.constant(MEAN, dtype=tf.float32)
     mean = mean[tf.newaxis, tf.newaxis, :]
     std = tf.constant(STD, dtype=tf.float32)
@@ -365,10 +475,17 @@ def normalize(data):
     return (data - mean)/std
 
 
-def gather(data):
-    # trajectory-wise mean
+# def centering(data, normal_type):
+def centering(data):
+    # trajectory-wise normalization (centering)
     mean = tf.reduce_mean(data, axis=1)
-    mean = mean[:, tf.newaxis, :]*tf.constant([1.,1.,0.993])
+    # TRAJ_MEAN_SCALE = NORMAL[normal_type]["traj_mean_scale"]
+    traj_mean_scale = tf.constant(TRAJ_MEAN_SCALE, dtype=tf.float32)[
+        tf.newaxis, tf.newaxis, :]
+    traj_mean_bias = tf.constant(TRAJ_MEAN_BIAS, dtype=tf.float32)[
+        tf.newaxis, tf.newaxis, :]
+    mean = mean[:, tf.newaxis, :] * traj_mean_scale + traj_mean_bias
+
     return data - mean
 
 
@@ -376,6 +493,7 @@ def labeling(data):
     return data[:, :18], data[:, 18:]
 
 
+# def preprocess(path, key, normal_type):
 def preprocess(path, key):
     filenames = tf.io.matching_files(path)
     assert len(filenames) > 0, "No Dataset Detected"
@@ -391,11 +509,14 @@ def preprocess(path, key):
     dataset = dataset.map(parse_tf_example)
     dataset = dataset.map(vectorize)
     dataset = dataset.map(collect)
-    dataset = dataset.map(gather)
+    # dataset = dataset.map(lambda d: centering(d, normal_type))
+    dataset = dataset.map(centering)
     return dataset
+
 
 class Dataloader():
 
+    # def __init__(self, key, batch_size, normal_type, tpu=False):
     def __init__(self, key, batch_size, tpu=False):
         self.tpu = tpu
         path = PATH[key]
@@ -403,12 +524,15 @@ class Dataloader():
         self.rep_in = 6*Vector
         self.rep_out = 6*Vector
         self.symmetry = O(3)
+
         def func():
+            # dataset = preprocess(path, key, normal_type)
             dataset = preprocess(path, key)
+            # dataset = dataset.map(lambda d: normalize(d,normal_type))
             dataset = dataset.map(normalize)
             dataset = dataset.map(lambda v: tf.reshape(v, (-1, 36)))
             dataset = dataset.flat_map(tf.data.Dataset.from_tensor_slices)
-            # dataset = dataset.repeat()
+            dataset = dataset.shuffle(512, reshuffle_each_iteration=True)
             dataset = dataset.batch(batch_size)
             dataset = dataset.map(labeling)
             return dataset
@@ -455,28 +579,59 @@ class Dataloader():
 #     return count
 
 
-def cal_mean_std(key, tpu=False):
+def cal_mean_std(key, batch_size, do_normalize, tpu=False):
     path = PATH[key]
+
     def func():
         dataset = preprocess(path, key)
+        if do_normalize:
+            dataset = dataset.map(normalize)
+        dataset = dataset.map(lambda v: tf.reshape(v, (-1, 36)))
+        dataset = dataset.flat_map(tf.data.Dataset.from_tensor_slices)
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.map(lambda v: tf.reshape(v, (-1, 12, 3)))
         mean = 0
+        ele_mean = 0
         length = 0
+        samples = []
         print("Calculate Mean..")
-        for v in tqdm(dataset):
+        search_ep = None
+        search_idx = None
+        for i, v in enumerate(tqdm(dataset)):
+            # tf.print("v shape", v.shape)
+            # tf.print("v", v)
             length += v.shape[0]
-            mean += tf.reduce_mean(tf.reduce_sum(v, axis=0), axis=0)
-        mean /= length
-        # _mean = mean[tf.newaxis, tf.newaxis, :]
-        _mean = tf.reduce_mean(mean)
+            # tf.print("length", length)
+            batch_sum = tf.reduce_sum(v, axis=0)
+            # tf.print("batch_sum", batch_sum)
+            ele_mean += tf.reduce_mean(batch_sum, axis=0)
+            # tf.print("ele_mean", ele_mean)
+            mean += tf.reduce_mean(batch_sum)
+            # tf.print("mean", mean)
+            if len(samples) < 3:
+                samples.append(v[1])
+        mean /= length                                                  # ()
+        ele_mean /= length                                               # (3,)
         std = 0
+        ele_std = 0
         print("Calculate STD..")
         for v in tqdm(dataset):
-            std += tf.reduce_mean(tf.reduce_sum((v-_mean)**2, axis=0), axis=0)
+            ele_std += tf.reduce_mean(tf.reduce_sum((v -
+                                      ele_mean)**2, axis=0), axis=0)
+            std += tf.reduce_mean(tf.reduce_sum((v-mean)**2, axis=0))
         std /= length
-        total_std = tf.reduce_mean(std)
-        std = tf.math.sqrt(std)
-        total_std = tf.sqrt(total_std)
-        return length, mean, std, total_std
+        ele_std /= length
+        std = tf.sqrt(std)
+        ele_std = tf.sqrt(ele_std)
+        print("Calculate MinMax..")
+        max_vec = tf.ones((3,), dtype=tf.float32)*-float("inf")
+        min_vec = tf.ones((3,), dtype=tf.float32)*float("inf")
+        for v in tqdm(dataset):
+            temp = tf.reduce_max(tf.reshape(v, (-1, 3)), axis=0)
+            max_vec = tf.maximum(max_vec, temp)
+            temp = tf.reduce_min(tf.reshape(v, (-1, 3)), axis=0)
+            min_vec = tf.minimum(min_vec, temp)
+        return length, mean, ele_mean, std, ele_std, max_vec, min_vec, samples
 
     if tpu:
         with strategy.scope():
@@ -486,9 +641,23 @@ def cal_mean_std(key, tpu=False):
 
 
 if __name__ == "__main__":
-    train_stat = cal_mean_std("training")
-    print("train", train_stat)
-    valid_stat = cal_mean_std("validation")
-    print("valid", valid_stat)
-    test_stat = cal_mean_std("testing")
-    print("test", test_stat)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--normalize",
+        action="store_true"
+    )
+    args = parser.parse_args()
+    batch_size = 512
+    for label in ["training", "validation", "testing"]:
+        print("<<<<<<<<<<<<", label, ">>>>>>>>>>>>")
+        l, m, em, s, es, mav, miv, traj = cal_mean_std(
+            label, batch_size, do_normalize=args.normalize)
+        tf.print("length", l)
+        tf.print("mean", m)
+        tf.print("ele_mean", em)
+        tf.print("std", s)
+        tf.print("ele_std", es)
+        tf.print("max_vec", mav)
+        tf.print("min_vec", miv)
+
