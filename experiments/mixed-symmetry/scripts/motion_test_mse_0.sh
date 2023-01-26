@@ -1,3 +1,6 @@
-NORMAL_TYPE=symm_scale_aware python train_softemlp.py --network=o3partialmixedemlp --sweep --ch=269 --axis=2
-NORMAL_TYPE=scale_aware python train_softemlp.py --network=o3partialmixedemlp --sweep --ch=269 --axis=2
-NORMAL_TYPE=symm_aware python train_softemlp.py --network=o3subgroupsoftemlp --sweep --auto_equiv
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3o2emlp --sweep --bs=256 --epochs=750
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3emlp --sweep --bs=256 --epochs=750 
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3o2mixedemlp --sweep --bs=256 --epochs=750 --ch=269
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3mixedemlp --sweep --bs=256 --epochs=750 --ch=269
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3partialmixedemlp --sweep --bs=256 --epochs=750 --ch=269 --axis=2
+NORMAL_TYPE=scale_aware python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv --sweep --no_early_stop

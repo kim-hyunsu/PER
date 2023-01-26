@@ -17,6 +17,7 @@ from oil.datasetup.datasets import split_dataset
 from utils import LoaderTo
 from torch.utils.data import DataLoader
 from emlp.groups import SO, O, Embed, Scaling
+import emlp.reps as emlp_reps
 from rpp.groups import Union, SE3, TranslationGroup, RotationGroup, ExtendedEmbed, Reflect
 import wandb
 from datetime import datetime
@@ -222,7 +223,7 @@ def main(args):
 
     args.normal_type = normal_type
     num_epochs = args.epochs
-    seed = 2022
+    seed = args.seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     lr = args.lr
@@ -241,6 +242,41 @@ def main(args):
             data, args.network
         ))
 
+    if args.model_equiv_error:
+        repin =6*emlp_reps.Vector
+        repout =6*emlp_reps.Vector
+        hidden_lyrs = args.layers-1
+        if args.network.lower() == "o3subgroupsoftemlp":
+            G = (O(3), Oxy2, Oyz2, Oxz2)
+            model = SoftEMLP(repin, repout,
+                                groups=G, num_layers=hidden_lyrs, ch=args.ch,
+                                gnl=args.gatednonlinearity,
+                                rpp_init=args.rpp_init)
+        elif args.network.lower() == "o3o2emlp":
+            G = Oxy2  # O(3) for inertia
+            model = EMLP(repin, repout,
+                            group=G, num_layers=hidden_lyrs, ch=args.ch)
+        G = (O(3), Oxy2, Oyz2, Oxz2)
+        model.groups = G
+        equivlength = len(G) if isinstance(G, tuple) else 1
+        reference = SoftEMLP(repin, repout,
+                            groups=G, num_layers=hidden_lyrs, ch=3,
+                            gnl=args.gatednonlinearity,
+                            rpp_init=args.rpp_init)
+        objax.io.load_var_collection(args.checkpoint_path, model.vars())
+        rng = np.random.default_rng(seed)
+        x = jnp.array(rng.standard_normal(
+            (args.error_test_samples, 18)))
+        # Group-action=based equivariance error
+        error_list = [model.equiv_error(
+            i, x, args.n_transforms,
+            rep_in_list=reference.rep_in_list,
+            rep_out_list=reference.rep_out_list) for i in range(equivlength)]
+        print(args.network.lower())
+        for i, error in enumerate(error_list):
+            print(f"{error}")
+            error = np.array(error)
+        return
     equiv_wd = [float(wd) for wd in args.equiv_wd.split(",")]
     basic_wd = [float(wd) for wd in args.basic_wd.split(",")]
     intervals = [int(interval) for interval in args.intervals.split(",")]
@@ -734,6 +770,8 @@ def main(args):
         rglr1_array = jnp.array(rglr1_list)
         print(rglr1_array.sum(0))
 
+
+
         if args.equiv_error_test:
             # Equivariance error for perturbed model
             for x, _ in trainloader:
@@ -1096,7 +1134,7 @@ def main(args):
                 if checkpoint_path is None:
                     now = datetime.now()
                     date_time_str = now.strftime(f"%Y%m%d%H%M%S")
-                    checkpoint_name = f"{dataset_name}{net_name}{date_time_str}"
+                    checkpoint_name = f"{normal_type}{dataset_name}{net_name}{date_time_str}"
                     checkpoint_path = f"checkpoints/{checkpoint_name}.npz"
                 objax.io.save_var_collection(checkpoint_path, model.vars())
 
@@ -1138,6 +1176,9 @@ def main(args):
         print(
             f"Trial {trial+1}, OOD MSE: {top_ood_mse:.3e} at {top_test_epoch}")
 
+    print("(checkpoint)")
+    print("NORMAL_TYPE:", normal_type)
+    print(f"{args.network.lower()},ch {args.ch}, bs {args.bs}, ep {args.epochs}{', earlystop' if not args.no_early_stop else ''}")
     for _mse in mse_list:
         print(_mse)
     print(f"Test MSE: {np.mean(mse_list)}±{np.std(mse_list)}")
@@ -1438,6 +1479,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no_early_stop",
         action="store_true"
+    )
+    parser.add_argument(
+        "--model_equiv_error",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=""
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=2022
     )
 
     args = parser.parse_args()

@@ -333,13 +333,21 @@ NORMAL = dict(
         horizon=False,
         lowerbound=0.05
     ),
+    # inc_scale_aware=dict(
+    #     mean=[0, 0, 0],  # ele_mean
+    #     std=[1.57, 1.77, 0.18],  # ele_std -> [1.57,1.77,0.18] ?
+    #     traj_mean_scale=[1, 1, 1],
+    #     traj_mean_bias=[0, 0, 0],
+    #     horizon=False,
+    #     lowerbound=0.1
+    # ),
     inc_scale_aware=dict(
-        mean=[0, 0, 0],  # ele_mean
-        std=[1.57, 1.77, 0.18],  # ele_std -> [1.57,1.77,0.18] ?
+        mean=[0, 0, 0], 
+        std=[1.23, 2.04, 0.05],  
         traj_mean_scale=[1, 1, 1],
         traj_mean_bias=[0, 0, 0],
         horizon=False,
-        lowerbound=0.1
+        lowerbound=0.05
     ),
     inc_symm_aware=dict(
         mean=[0, 0, 0],  # mean
