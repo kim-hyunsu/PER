@@ -157,3 +157,5 @@ wandb/
 saved-outputs/
 datasets/
 key.py
+
+checkpoints/*.npz

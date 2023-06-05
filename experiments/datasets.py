@@ -6,8 +6,8 @@ import jax.numpy as jnp
 from emlp.reps import Scalar, Vector, T
 from torch.utils.data import Dataset
 from oil.utils.utils import export, Named, Expression, FixedNumpySeed
-from emlp.groups import SO, O, Trivial, Lorentz, RubiksCube, Cube, Scaling
-from rpp.groups import SE3, Union
+from emlp.groups import SO, O, Trivial, Lorentz, RubiksCube, Cube, Scaling, S
+from models.groups import SE3, Union
 from functools import partial
 import itertools
 from jax import vmap, jit
@@ -481,11 +481,13 @@ class SyntheticSE3Dataset(Dataset, metaclass=Named):
 
 @export
 class ModifiedInertia(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=5, noise=0.3, axis=2, shift=0, sign=0):
+    def __init__(
+            self, N=1024, k=5, noise=0.3, axis=2, shift=0, sign=0, dim_swap=False):
         super().__init__()
         self.k = k
         self.noise = noise
         self.axis = axis
+        self.dim_swap = dim_swap
         self.dim = (1+3)*k
         rng = torch.Generator()
         rng.manual_seed(N+k+self.dim+int(shift))
@@ -497,9 +499,15 @@ class ModifiedInertia(Dataset, metaclass=Named):
 
         self.Y = self.func(self.X, torch)
 
-        self.rep_in = k*Scalar+k*Vector
-        self.rep_out = T(2)
-        self.symmetry = O(3)
+        if not dim_swap:
+            self.rep_in = k*Scalar+k*Vector
+            self.rep_out = T(2)
+            self.symmetry = O(3)
+        else:
+            self.X[:,k:] = self.X[:,k:].view(-1,k,3).transpose(1,2).reshape(-1,3*k)
+            self.rep_in = 4*Vector
+            self.rep_out = 9*Scalar
+            self.symmetry = S(k)
         self.X = self.X.numpy()
         self.Y = self.Y.numpy()
         self.stats = 0, 1, 0, 1  # Xmean,Xstd,Ymean,Ystd
@@ -606,7 +614,8 @@ class SyntheticRadiusDataset(Dataset, metaclass=Named):
 
 @export
 class SyntheticCosSimDataset(Dataset, metaclass=Named):
-    def __init__(self, N=1024, k=3, noise=0, sym="", shift=0, sign=0):
+    def __init__(
+            self, N=1024, k=3, noise=0, sym="", shift=0, sign=0, dim_swap=False):
 
         super().__init__()
         self.d = 3
@@ -614,6 +623,7 @@ class SyntheticCosSimDataset(Dataset, metaclass=Named):
         self.dim = self.d*k
         self.sym = sym
         self.noise = noise
+        self.dim_swap = dim_swap
         rng = torch.Generator()
         rng.manual_seed(N+k+self.dim+int(shift))
         self.X = torch.randn(N, self.dim, generator=rng)
@@ -623,11 +633,18 @@ class SyntheticCosSimDataset(Dataset, metaclass=Named):
 
         self.Y = self.func(self.X, torch)
 
+        if not dim_swap:
+            self.rep_in = k*Vector
+            self.rep_out = Scalar
+            self.symmetry = Union(SO(3), Scaling(3))
+        else:
+            self.X = self.X.view(-1,k,3).transpose(1,2).reshape(-1,3*k)
+            self.rep_in = 3*Vector
+            self.rep_out = Scalar
+            self.symmetry = S(k)
         self.X = self.X.numpy()
         self.Y = self.Y.numpy()
-        self.rep_in = k*Vector
-        self.rep_out = Scalar
-        self.symmetry = Union(SO(3), Scaling(3))
+
 
     def func(self, x, op):
         def cosinesimilarity(a, b):

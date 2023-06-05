@@ -1,0 +1,2 @@
+SOFT_DATASET=inertia python train_softemlp_checkpoint.py --network=o3famlp --no_early_stop --num_frames=12 --noise=0 --logoff --sweep
+SOFT_DATASET=cossim python train_softemlp_checkpoint.py --network=so3scalefamlp --no_early_stop --num_frames=12 --noise=0 --sym=so3-scale --logoff --sweep --bs=500 --lr=5e-4

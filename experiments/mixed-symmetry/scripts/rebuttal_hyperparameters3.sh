@@ -1,0 +1,4 @@
+SOFT_DATASET=cossim python train_softemlp_checkpoint.py --network=so3scalesubgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --noise=1 --sym=scale --init_equiv=0.002
+SOFT_DATASET=cossim python train_softemlp_checkpoint.py --network=so3scalesubgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --noise=1 --sym=scale --init_equiv=0.05
+SOFT_DATASET=cossim python train_softemlp_checkpoint.py --network=so3scalesubgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --noise=1 --sym=scale --init_equiv=1.25
+SOFT_DATASET=cossim python train_softemlp_checkpoint.py --network=so3scalesubgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --noise=1 --sym=scale --adjust_exp=3

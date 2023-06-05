@@ -1,0 +1,4 @@
+SOFT_DATASET=inertia python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --axis=2 --ch 128 --noise=-1 --init_equiv=400
+SOFT_DATASET=inertia python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --axis=2 --ch 128 --noise=-1 --init_equiv=25
+SOFT_DATASET=inertia python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --axis=2 --ch 128 --noise=-1 --init_equiv=5
+SOFT_DATASET=inertia python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv --sweep --no_early_stop --logoff --axis=2 --ch 128 --noise=-1 --adjust_exp=3

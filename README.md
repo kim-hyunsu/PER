@@ -1,8 +1,15 @@
 # Projection-based Equivariance Regularizer
 
-# How to run training for Waymo Open Dataset
+## Environment
 ```bash
+conda create -n per python=3.8
+conda activate per
+pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 pip install -e .
+```
+
+## How to run training for Waymo Open Dataset
+```bash
 cd experiments/mixed-symmetry
 export WANDB_API_KEY=your_wandb_api_key
 export SOFT_DATASET=motion

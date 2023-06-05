@@ -16,11 +16,9 @@ from models.objax_per import MLP, ExtendedSoftEMLP, SoftEMLP, RPP, MixedRPP, EML
 from oil.datasetup.datasets import split_dataset
 from utils import LoaderTo
 from torch.utils.data import DataLoader
-from emlp.groups import SO, O, Embed, Scaling, SL, GL, Z, S
-import emlp.reps as emlp_reps
+from emlp.groups import SO, O, Embed, Scaling
 from models.groups import Union, SE3, TranslationGroup, RotationGroup, ExtendedEmbed, Reflect
 import wandb
-from datetime import datetime
 
 from key import WANDB_API_KEY
 os.environ["WANDB_API_KEY"] = WANDB_API_KEY
@@ -29,7 +27,6 @@ DATASET_CANDIDATES = ["cossim", "se3", "inertia", "motion"]
 
 dataset_name = os.getenv("SOFT_DATASET")
 normal_type = os.environ.get("NORMAL_TYPE")
-symmetry_type = normal_type
 if dataset_name is None:
     raise ValueError("SOFT_DATASET is None")
 print(f"$SOFT_DATASET={dataset_name}")
@@ -45,12 +42,15 @@ if dataset_name == "motion":
 Oxy2 = Embed(O(2), 3, slice(2))
 Oyz2 = Embed(O(2), 3, slice(1, 3))
 Oxz2 = Embed(O(2), 3, slice(0, 3, 2))
-SLxy2 = Embed(SL(2), 3, slice(2))
-SLyz2 = Embed(SL(2), 3, slice(1, 3))
-SLxz2 = Embed(SL(2), 3, slice(0, 3, 2))
-GLxy2 = Embed(GL(2), 3, slice(2))
-GLyz2 = Embed(GL(2), 3, slice(1, 3))
-GLxz2 = Embed(GL(2), 3, slice(0, 3, 2))
+
+# SE(3)
+# SL3 = Embed(SL(3), 4, slice(3))
+# rxy2 = ExtendedEmbed(RotationGroup(2), 4, slice(2))
+# ryz2 = ExtendedEmbed(RotationGroup(2), 4, slice(1, 3))
+# rxz2 = ExtendedEmbed(RotationGroup(2), 4, slice(0, 3, 2))
+# txy2 = ExtendedEmbed(TranslationGroup(2), 4, slice(2))
+# tyz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(1, 3))
+# txz2 = ExtendedEmbed(TranslationGroup(2), 4, slice(0, 3, 2))
 
 SO3 = SO(3)
 Scale = Scaling(3)
@@ -240,73 +240,12 @@ def main(args):
             data, args.network
         ))
 
-    if args.model_equiv_error:
-        repin = 6*emlp_reps.Vector
-        repout = 6*emlp_reps.Vector
-        hidden_lyrs = args.layers-1
-        if args.network.lower() == "o3subgroupsoftemlp":
-            G = (O(3), Oxy2, Oyz2, Oxz2)
-            model = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        elif args.network.lower() == "o3o2emlp":
-            G = Oxy2  # O(3) for inertia
-            model = EMLP(repin, repout,
-                         group=G, num_layers=hidden_lyrs, ch=args.ch)
-            G = (O(3), Oxy2, Oyz2, Oxz2)
-        elif args.network.lower() == "o3misspecifiedsoftemlp":
-            G = (O(3), Oxy2, SL(3), SLyz2, GL(3), GLxz2)
-            model = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        elif args.network.lower() == "o3misspecified2softemlp":
-            G = (O(3), O(3), Oxy2, SL(3), SLyz2, GL(3), GLxz2)
-            model = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        elif args.network.lower() == "o3misspecified3softemlp":
-            G = (O(3), Oxy2, Oyz2, SLxy2, SLxz2, GLyz2, GLxz2)
-            model = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        elif args.network.lower() == "o3misspecified4softemlp":
-            G = (O(3), Oxy2, SLyz2, GLxz2)
-            model = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        # G = (O(3), O(3), Oxy2, SL(3), SLyz2, GL(3), GLxz2)
-        model.groups = G
-        equivlength = len(G) if isinstance(G, tuple) else 1
-        reference = SoftEMLP(repin, repout,
-                             groups=G, num_layers=hidden_lyrs, ch=3,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        objax.io.load_var_collection(args.checkpoint_path, model.vars())
-        rng = np.random.default_rng(seed)
-        x = jnp.array(rng.standard_normal(
-            (args.error_test_samples, 18)))
-        # Group-action=based equivariance error
-        error_list = [model.equiv_error(
-            i, x, args.n_transforms,
-            rep_in_list=reference.rep_in_list,
-            rep_out_list=reference.rep_out_list) for i in range(equivlength)]
-        print(args.network.lower())
-        for i, error in enumerate(error_list):
-            print(f"{error}")
-            error = np.array(error)
-        return
     equiv_wd = [float(wd) for wd in args.equiv_wd.split(",")]
     basic_wd = [float(wd) for wd in args.basic_wd.split(",")]
     intervals = [int(interval) for interval in args.intervals.split(",")]
 
     mse_list = []
     ood_list = []
-    equiv_list = []
     for trial in range(args.trials):
         watermark = "{}_{}noise_{}sign_{}shift_{}_eq{}_wd{}_t{}".format(
             f"axis{args.axis}" if data == "inertia" else args.sym,
@@ -320,21 +259,11 @@ def main(args):
         wandb.config.update(args)
         wandb.define_metric("valid_mse", summary="min")
 
-        # O(3) -> Sn
-        if data == "inertia":
-            dim_swap = True if "o3sn" in args.network.lower() else False
-        # SO(3), Scale(3) -> Sn
-        elif data == "cossim":
-            dim_swap = True if "so3scalesn" in args.network.lower() else False
-        else:
-            dim_swap = False
-
         # Initialize dataset with 1000 examples
         if args.noise_std == 0:
             if data == "inertia":
                 dset = ModifiedInertia(
-                    3000, noise=args.noise, axis=args.axis,
-                    sign=args.sign, shift=args.ind_shift, dim_swap=dim_swap)
+                    3000, noise=args.noise, axis=args.axis, sign=args.sign, shift=args.ind_shift)
             elif data == "se3":
                 dset = SyntheticSE3Dataset(
                     3000, for_mlp=True if args.network.lower() == "mlp" else False,
@@ -345,13 +274,11 @@ def main(args):
         else:
             if data == "inertia":
                 dset = RandomlyModifiedInertia(
-                    3000, noise_std=args.noise_std, shift=args.ind_shift,
-                    dim_swap=dim_swap)
+                    3000, noise_std=args.noise_std, shift=args.ind_shift)
         if args.sign == 0:
             if data == "inertia":
                 ood = ModifiedInertia(
-                    1000, noise=args.noise, axis=args.axis,
-                    shift=args.ood_shift,dim_swap=dim_swap)
+                    1000, noise=args.noise, axis=args.axis, shift=args.ood_shift)
             elif data == "se3":
                 ood = SyntheticSE3Dataset(1000,
                                           for_mlp=True if args.network.lower() == "mlp" else False,
@@ -365,8 +292,7 @@ def main(args):
         else:
             if data == "inertia":
                 ood = ModifiedInertia(
-                    1000, noise=args.noise, axis=args.axis,
-                    sign=-args.sign, dim_swap=dim_swap)
+                    1000, noise=args.noise, axis=args.axis, sign=-args.sign)
             elif data == "se3":
                 ood = SyntheticSE3Dataset(1000,
                                           for_mlp=True if args.network.lower() == "mlp" else False,
@@ -419,10 +345,6 @@ def main(args):
             G = dset.symmetry  # O(3) for inertia
             model = MLP(dset.rep_in, dset.rep_out,
                         group=G, num_layers=hidden_lyrs, ch=args.ch)
-            rng = jax.random.PRNGKey(0)
-            input = jax.random.normal(rng, (4, 20))
-            _equiv_error = model.equiv_error_alone(input, 4)
-            print("equiv error", _equiv_error)
         elif network_name == "se3mlp":
             args.basic_wd = [0.]
             G = SO(3)  # just for dimension matching
@@ -435,44 +357,14 @@ def main(args):
             model = MLP(dset.rep_in, dset.rep_out,
                         group=G, num_layers=hidden_lyrs, ch=args.ch)
 
-        # Frame averaging
-        elif network_name == "o3famlp":
-            assert args.num_frames > 0
-            args.basic_wd = [0.]
-            G = SO(3)
-            model = MLP(dset.rep_in, dset.rep_out,
-                        group=G, num_layers=hidden_lyrs, ch=args.ch,
-                        fa = args.num_frames)
-            rng = jax.random.PRNGKey(0)
-            input = jax.random.normal(rng, (4, 20))
-            _equiv_error = model.equiv_error_alone(input, 4)
-            print("equiv error", _equiv_error)
-        elif network_name == "so3scalefamlp":
-            assert args.num_frames > 0
-            args.basic_wd = [0.]
-            G = dset.symmetry
-            model = MLP(dset.rep_in, dset.rep_out,
-                        group=G, num_layers=hidden_lyrs, ch=args.ch,
-                        fa = args.num_frames)
-
-
+        # EMLP
         elif network_name == "o3o2emlp":
-            G = [Oyz2, Oxz2, Oxy2][args.axis]  # O(3) for inertia
+            G = Oxy2  # O(3) for inertia
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=hidden_lyrs, ch=args.ch)
             # model.get_current_state = lambda: -2
             # model.set_state = lambda x: None
             # model.state = -2
-        elif network_name == "so3scaleso3emlp":
-            G = SO3
-            model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=hidden_lyrs, ch=args.ch)
-        elif network_name == "so3scalescaleemlp":
-            G = Scale
-            model = EMLP(dset.rep_in, dset.rep_out,
-                         group=G, num_layers=hidden_lyrs, ch=args.ch)
-
-        # EMLP
         elif network_name == "o3emlp":
             G = dset.symmetry  # O(3) for inertia
             model = EMLP(dset.rep_in, dset.rep_out,
@@ -480,10 +372,6 @@ def main(args):
             # model.get_current_state = lambda: -2
             # model.set_state = lambda x: None
             # model.state = -2
-            rng = jax.random.PRNGKey(0)
-            input = jax.random.normal(rng, (4, 20))
-            _equiv_error = model.equiv_error_alone(input, 4)
-            print("equiv error", _equiv_error)
         elif network_name == "se3emlp":
             G = dset.symmetry  # SE3() for se3
             model = EMLP(dset.rep_in, dset.rep_out,
@@ -586,8 +474,7 @@ def main(args):
             model = SoftEMLP(dset.rep_in, dset.rep_out,
                              groups=G, num_layers=hidden_lyrs, ch=args.ch,
                              gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init,
-                             flex=args.flex_act)
+                             rpp_init=args.rpp_init)
             model.set_state(args.initial_state)  # not necessary
         elif network_name == "se3subgroupsoftemlp":
             G = (SE3(), RotationGroup(3), TranslationGroup(3))
@@ -602,59 +489,17 @@ def main(args):
             model = SoftEMLP(dset.rep_in, dset.rep_out,
                              groups=G, num_layers=hidden_lyrs, ch=args.ch,
                              gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init,
-                             flex=args.flex_act)
+                             rpp_init=args.rpp_init)
             model.set_state(args.initial_state)  # not necessary
         elif network_name == "so3scalesubgroupsoftemlp":
             G = (SO3Scale, SO3, Scale)
             model = SoftEMLP(dset.rep_in, dset.rep_out,
                              groups=G, num_layers=hidden_lyrs, ch=args.ch,
                              gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init,
-                             flex=args.flex_act)
-            model.set_state(args.initial_state)  # not necessary
-        elif network_name == "o3misspecifiedsoftemlp":
-            G = (O(3), Oxy2, SL(3), SLyz2, GL(3), GLxz2)
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
                              rpp_init=args.rpp_init)
             model.set_state(args.initial_state)  # not necessary
-        elif network_name == "o3misspecified2softemlp":
-            G = (O(3), O(3), Oxy2, SL(3), SLyz2, GL(3), GLxz2)
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-            model.set_state(args.initial_state)  # not necessary
-        elif network_name == "o3misspecified3softemlp":
-            G = (O(3), Oxy2, Oyz2, SLxy2, SLxz2, GLyz2, GLxz2)
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-            model.set_state(args.initial_state)  # not necessary
-        elif network_name == "o3misspecified4softemlp":
-            G = (O(3), Oxy2, SLyz2, GLxz2)
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-            model.set_state(args.initial_state)  # not necessary
-        elif network_name == "o3snsoftemlp":
-            G = (S(5), S(5))
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
-        elif network_name == "so3scalesnsoftemlp":
-            G = (S(3), S(3))
-            model = SoftEMLP(dset.rep_in, dset.rep_out,
-                             groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                             gnl=args.gatednonlinearity,
-                             rpp_init=args.rpp_init)
         else:
-            raise Exception("Invalid Model Name")
+            raise Exception()
 
         equivlength = len(G) if isinstance(G, tuple) else 1
         if args.equiv != "":
@@ -871,20 +716,20 @@ def main(args):
             rglr += args.gated_wd*sum((v.value ** 2).sum()
                                       for k, v in model.vars().items() if k.endswith('w_gated'))
 
-            return args.loss_scale*mse + rglr, mse, rglr
+            return args.loss_scale*mse + rglr
 
         grad_and_val = objax.GradValues(loss, model.vars())
 
         @JIT
         @objax.Function.with_vars(model.vars()+opt.vars())
         def train_op(x, y, lr, equiv):
-            g, (v, _mse, _rglr) = grad_and_val(x, y, equiv)
+            g, v = grad_and_val(x, y, equiv)
             opt(lr=lr, grads=g)
-            return v, _mse, _rglr
+            return v
 
         rglr1_list, rglr2, rglr3_list = equiv_regularizer(
             except_bias=args.no_bias_regular)
-        print(f"Initial Equiv {args.init_equiv} Regularizers")
+        print("Initial Equiv Regularizers")
         rglr1_array = jnp.array(rglr1_list)
         print(rglr1_array.sum(0))
 
@@ -1100,13 +945,11 @@ def main(args):
         es = EarlyStop(patience=50, begin=2*args.adjust_equiv_at,
                        disable=args.no_early_stop)
         train_mse = None
-        train_loss = None
         valid_mse = None
         test_mse_updated = False
         train_length = None
         valid_length = None
         test_length = None
-        checkpoint_path = None
 
         def reporting(info):
             test_mse_updated = info["test_mse_updated"]
@@ -1143,8 +986,6 @@ def main(args):
 
             if train_mse is not None:
                 contents["train_mse"] = info["train_mse"]
-            if train_loss is not None:
-                contents["train_loss"] = info["train_loss"]
             if valid_mse is not None:
                 contents["valid_mse"] = info["valid_mse"]
             for i, eq in enumerate(equiv):
@@ -1184,7 +1025,6 @@ def main(args):
                 reporting({
                     "epoch": epoch,
                     "train_mse": np.array(train_mse),
-                    "train_loss": np.array(train_loss),
                     "valid_mse": np.array(valid_mse),
                     "rglr1_list": np.array(rglr1_list),
                     "rglr2": np.array(rglr2),
@@ -1198,21 +1038,16 @@ def main(args):
             # training
             train_length = 0
             train_mse = 0
-            train_loss = 0
             lr = cosine_schedule(
                 args.lr, epoch, num_epochs, min_value=args.min_lr)
-            for train_idx, (x, y) in enumerate(trainloader):
+            for x, y in trainloader:
                 if args.equiv_decay:
                     equiv = cosine_schedule(equiv_coef, epoch, num_epochs)
-                l, _mse, _ = train_op(jnp.array(x), jnp.array(y), lr, equiv)
-                if epoch == 0 and train_idx == 0:
-                    print(f"Initial Train MSE {_mse:.4f}")
+                l = train_op(jnp.array(x), jnp.array(y), lr, equiv)
                 train_length += x.shape[0]
-                train_mse += _mse*x.shape[0]
-                train_loss += l*x.shape[0]
+                train_mse += l[0]*x.shape[0]
             # train_mse /= lengths["train"]
             train_mse /= train_length
-            train_loss /= train_length
 
             # evaluating
             valid_length = 0
@@ -1256,59 +1091,50 @@ def main(args):
                 test_mse_updated = True
                 top_test_epoch = epoch
                 top_mse = valid_mse
-                if checkpoint_path is None:
-                    now = datetime.now()
-                    date_time_str = now.strftime(f"%Y%m%d%H%M%S")
-                    symmetry_type = normal_type
-                    if dataset_name == "cossim":
-                        symmetry_type = args.sym
-                    elif dataset_name == "inertia":
-                        symmetry_type = f"axis{args.axis}"
-                    checkpoint_name = f"{symmetry_type}{dataset_name}{net_name}{date_time_str}"
-                    checkpoint_path = f"checkpoints/{checkpoint_name}.npz"
-                objax.io.save_var_collection(checkpoint_path, model.vars())
 
-        objax.io.load_var_collection(checkpoint_path, model.vars())
-        test_length = 0
-        test_mse = 0
-        for x, y in testloader:
-            x, y = jnp.array(x), jnp.array(y)
-            if data != "motion":
-                l = mse(x, y)
-            else:
-                l = unnormalized_ade(x, y)
-            test_length += x.shape[0]
-            test_mse += l*x.shape[0]
-        # test_mse /= lengths["test"]
-        test_mse /= test_length
-        top_test_mse = test_mse
-        wandb.summary["test_mse"] = np.array(test_mse)
-        wandb.summary["top_test_epoch"] = top_test_epoch
+                test_length = 0
+                test_mse = 0
+                for x, y in testloader:
+                    x, y = jnp.array(x), jnp.array(y)
+                    if data != "motion":
+                        l = mse(x, y)
+                    else:
+                        l = unnormalized_ade(x, y)
+                    test_length += x.shape[0]
+                    test_mse += l*x.shape[0]
+                # test_mse /= lengths["test"]
+                test_mse /= test_length
+                top_test_mse = test_mse
+                wandb.summary["test_mse"] = np.array(test_mse)
+                wandb.summary["top_test_epoch"] = top_test_epoch
 
-        if ood is not None:
-            ood_length = 0
-            ood_mse = 0
-            for x, y in oodloader:
-                x, y = jnp.array(x), jnp.array(y)
-                l = mse(x, y)
-                ood_length += x.shape[0]
-                ood_mse += l*x.shape[0]
-            # ood_mse /= lengths["ood"]
-            ood_mse /= ood_length
-            top_ood_mse = ood_mse
-            wandb.summary["OOD_mse"] = np.array(ood_mse)
+                if ood is not None:
+                    ood_length = 0
+                    ood_mse = 0
+                    for x, y in oodloader:
+                        x, y = jnp.array(x), jnp.array(y)
+                        l = mse(x, y)
+                        ood_length += x.shape[0]
+                        ood_mse += l*x.shape[0]
+                    # ood_mse /= lengths["ood"]
+                    ood_mse /= ood_length
+                    top_ood_mse = ood_mse
+                    wandb.summary["OOD_mse"] = np.array(ood_mse)
+                # save model
+                # if epoch > 3000 or (epoch+1) % 500 == 0:
+                #     objax.io.save_var_collection('./{}.{}'.format(
+                #         watermark.replace(".", "dot"), "npz"
+                #     ), model.vars())
 
         wandb.finish()
         mse_list.append(top_test_mse)
         ood_list.append(top_ood_mse)
-        equiv_list.append(equiv)
         print(
             f"Trial {trial+1}, Test MSE: {top_test_mse:.3e} at {top_test_epoch}")
         print(
             f"Trial {trial+1}, OOD MSE: {top_ood_mse:.3e} at {top_test_epoch}")
 
-    print("(checkpoint)")
-    print("Symmetry type:", symmetry_type)
+    print("NORMAL_TYPE:", normal_type)
     print(f"{args.network.lower()},ch {args.ch}, bs {args.bs}, ep {args.epochs}{', earlystop' if not args.no_early_stop else ''}")
     for _mse in mse_list:
         print(_mse)
@@ -1316,8 +1142,6 @@ def main(args):
     for _ood in ood_list:
         print(_ood)
     print(f"OOD MSE: {np.mean(ood_list)}±{np.std(ood_list)}")
-    for _equiv in equiv_list:
-        print(_equiv)
     f = open("./inertia_result.txt", 'a')
     f.write(watermark)
     for i in range(len(mse_list)):
@@ -1443,9 +1267,9 @@ if __name__ == "__main__":
         "--ch",
         type=int,
         default={
-            # "inertia": 384,  # 270 for a half of parameters
-            "inertia": 128,  # 89 for a half of parameters
-            "cossim": 128,  # 90 for a half of parameters
+            "inertia": 384,  # 270 for a half of parameters
+            "se3": 128,  # 45 for a half of parameters
+            "cossim": 128,  # 45 for a half of parameters
             "motion": 384  # 269 for a half of parameters
         }[dataset_name]
     )
@@ -1623,27 +1447,9 @@ if __name__ == "__main__":
         action="store_true"
     )
     parser.add_argument(
-        "--model_equiv_error",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--checkpoint_path",
-        type=str,
-        default=""
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=2022
-    )
-    parser.add_argument(
-        "--num_frames", # only for frame averaging
-        type=int,
-        default=8
-    )
-    parser.add_argument(
-        "--flex_act",
-        action="store_true"
     )
 
     args = parser.parse_args()
