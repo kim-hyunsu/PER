@@ -1,7 +1,9 @@
 # Projection-based Equivariance Regularizer
-Source code of [Regularizing Towards Soft Equivariance Under Mixed Symmetries](https://arxiv.org/abs/2306.00356)
+Source code of [Regularizing Towards Soft Equivariance Under Mixed Symmetries](https://arxiv.org/abs/2306.00356) (ICML23).
 
-## Environment
+Some codes are adopted from https://github.com/mfinzi/residual-pathway-priors.
+
+## Environmental Settings
 ```bash
 conda create -n per python=3.8
 conda activate per
@@ -9,7 +11,7 @@ pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-re
 pip install -e .
 ```
 
-## How to run training for the Synthetic function dataset (inertia)
+## How to run training for the synthetic function dataset (inertia)
 ```bash
 cd experiments/mixed-symmetry
 mkdir checkpoints
@@ -28,6 +30,7 @@ export WAYMO_PATH=/path/to/waymo/open/dataset
 export NORMAL_TYPE=symm_aware
 python train_softemlp_checkpoint.py --network=o3subgroupsoftemlp --auto_equiv
 ```
+We exploited the dataset of version v1.1, available from https://waymo.com/intl/en_us/open/download/.
 
 ## Citation
 ```bibtex
