@@ -200,13 +200,7 @@ def adjust_equiv(_rglr_list, equiv):
     rglr_list = jnp.array(_rglr_list)
     if len(rglr_list.shape) > 1:
         rglr_list = rglr_list.sum(0)
-    # VERSION 1
-    # max_rglr_list = max(rglr_list)*jnp.ones_like(rglr_list)
-    # min_rglr = min(jnp.where(equiv == 0, max_rglr_list, rglr_list))
-    # scale = rglr_list/min_rglr
-    # adjusted =  equiv/scale
 
-    # VERSION 2
     mean_regular = (equiv*rglr_list).sum()/(equiv != 0).sum()
     adjusted = mean_regular/rglr_list
     adjusted = jnp.where(equiv == 0, equiv, adjusted)
@@ -460,9 +454,6 @@ def main(args):
             G = [Oyz2, Oxz2, Oxy2][args.axis]  # O(3) for inertia
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=hidden_lyrs, ch=args.ch)
-            # model.get_current_state = lambda: -2
-            # model.set_state = lambda x: None
-            # model.state = -2
         elif network_name == "so3scaleso3emlp":
             G = SO3
             model = EMLP(dset.rep_in, dset.rep_out,
@@ -477,9 +468,6 @@ def main(args):
             G = dset.symmetry  # O(3) for inertia
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=hidden_lyrs, ch=args.ch)
-            # model.get_current_state = lambda: -2
-            # model.set_state = lambda x: None
-            # model.state = -2
             rng = jax.random.PRNGKey(0)
             input = jax.random.normal(rng, (4, 20))
             _equiv_error = model.equiv_error_alone(input, 4)
@@ -489,16 +477,10 @@ def main(args):
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=hidden_lyrs, ch=args.ch,
                          extend=True)
-            # model.get_current_state = lambda: -2
-            # model.set_state = lambda x: None
-            # model.state = -2
         elif network_name == "so3scaleemlp":
             G = dset.symmetry  # Union(SO(3), Scaling(3)) for cossim
             model = EMLP(dset.rep_in, dset.rep_out,
                          group=G, num_layers=hidden_lyrs, ch=args.ch)
-            # model.get_current_state = lambda: -2
-            # model.set_state = lambda x: None
-            # model.state = -2
 
         # RPP
         elif network_name == "o3o2mixedemlp":
@@ -698,8 +680,6 @@ def main(args):
             rglr3_list = [[0 for _ in range(equivlength)]
                           for _ in range(args.layers)]
             if "softemlp" in net_name:
-                # dims = model.get_dims(null=True)
-                # weights = dims/jnp.sum(dims)
                 for i, lyr in enumerate(model.network):
                     if i != len(model.network)-1:
                         lyr = lyr.linear
@@ -769,14 +749,6 @@ def main(args):
                 msebystate_list = []
                 for state in range(-1, equivlength):
                     model.set_state(state)
-                    # if data == "motion":
-                    #     x_mean = jnp.mean(x, axis=1)
-                    #     x_mean = jnp.expand_dims(x_mean, axis=1)
-                    #     x -= x_mean
-                    #     yhat_prime = model(x)
-                    #     yhat_prime += x_mean
-                    # else:
-                    #     yhat_prime = model(x)
                     yhat_prime = model(x)
                     msebystate_list.append(((yhat_prime-y)**2).mean())
                 model.set_state(current_state)
@@ -788,14 +760,6 @@ def main(args):
         @JIT
         @objax.Function.with_vars(model.vars())
         def mse(x, y):
-            # if data == "motion":
-            #     x_mean = jnp.mean(x, axis=1)
-            #     x_mean = jnp.expand_dims(x_mean, axis=1)
-            #     x -= x_mean
-            #     yhat_prime = model(x)
-            #     yhat_prime += x_mean
-            # else:
-            #     yhat = model(x)
             yhat = model(x)
             return ((yhat-y)**2).mean()
 
@@ -887,205 +851,6 @@ def main(args):
         print(f"Initial Equiv {args.init_equiv} Regularizers")
         rglr1_array = jnp.array(rglr1_list)
         print(rglr1_array.sum(0))
-
-        if args.equiv_error_test:
-            # Equivariance error for perturbed model
-            for x, _ in trainloader:
-                print("Equivariance error of perturbed first layer")
-                forward_func = model.network[0]
-                rep_in_list = forward_func.rep_in_list
-                rep_out_list = forward_func.rep_out_list
-                for g in range(equivlength):
-                    model.set_state(g)
-                    for eps in (0, 0.5, 1, 1.5, 2):
-                        model.perturb(eps)
-                        error = model.equiv_error(g, x[:args.error_test_samples], args.n_transforms,
-                                                  forward=forward_func, rep_in_list=rep_in_list, rep_out_list=rep_out_list)
-                        print(f"equiv_error_g{g}_eps{eps}: {error}")
-                        # if eps == 0:
-                        #     print("INPUT")
-                        #     print(x[5:6])
-                        #     print("OUTPUT")
-                        #     print(forward_func(x[5:6]))
-                print("Equivariance error of perturbed model without setone")
-                model.letitbe()
-                for g in range(equivlength):
-                    model.set_state(g)
-                    for eps in (0, 0.5, 1, 1.5, 2):
-                        model.perturb(eps)
-                        error = model.equiv_error(
-                            g, x[:args.error_test_samples], args.n_transforms)
-                        print(f"equiv_error_g{g}_eps{eps}: {error}")
-                model.letitbe(False)
-                model.init_model()
-                return
-        if args.hypothesis_test:
-            from models.objax_per import SoftEMLPLinear, SoftEMLPBlock
-            from emlp.reps import Vector, Scalar
-            from emlp.nn.objax import nn
-            from models.groups import SE2
-            import types
-            repin = 2*Vector
-            repout = Scalar
-            # repout = 2*Vector
-            # repin = 3*Vector
-            # repout = 3*Vector
-            repin_list = [repin(g) for g in G]
-            repout_list = [repout(g) for g in G]
-            version = 0
-            if version == 0:
-                linear_model = SoftEMLPLinear(
-                    repin_list, repout_list, rpp_init=False, extend=True)
-            elif version == 1:
-                linear_model = SoftEMLPBlock(
-                    repin_list, repout_list, gnl=True, rpp_init=False, extend=True)
-            elif version == 2:
-                linear_model = SoftEMLPBlock(
-                    repin_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                linear_model1 = SoftEMLPBlock(
-                    repout_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                linear_model2 = SoftEMLPBlock(
-                    repout_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                linear_model3 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                linear_model = nn.Sequential(
-                    [linear_model, linear_model1, linear_model2, linear_model3])
-
-            elif version == 3:
-                linear_model = SoftEMLPLinear(
-                    repin_list, repout_list, rpp_init=False, extend=True)
-                linear_model1 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                linear_model2 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                linear_model3 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                linear_model = nn.Sequential(
-                    [linear_model, linear_model1, linear_model2, linear_model3])
-
-            elif version == 4:
-                linear_model = SoftEMLPLinear(
-                    repin_list, repout_list, rpp_init=False, extend=True)
-                filter_model = TranslationNormalizer(repout_list[0])
-                linear_model = nn.Sequential([linear_model, filter_model])
-
-            elif version == 5:
-                linear_model = SoftEMLPLinear(
-                    repin_list, repout_list, rpp_init=False, extend=True)
-                filter_model = TranslationNormalizer(repout_list[0])
-                linear_model1 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                filter_model1 = TranslationNormalizer(repout_list[0])
-                linear_model2 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                filter_model2 = TranslationNormalizer(repout_list[0])
-                linear_model3 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                filter_model3 = TranslationNormalizer(repout_list[0])
-                linear_model = nn.Sequential(
-                    [linear_model, filter_model, linear_model1,
-                     filter_model1, linear_model2, filter_model2,
-                     linear_model3, filter_model3])
-            elif version == 6:
-                linear_model = SoftEMLPBlock(
-                    repin_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                filter_model = TranslationNormalizer(repout_list[0])
-                linear_model1 = SoftEMLPBlock(
-                    repout_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                filter_model1 = TranslationNormalizer(repout_list[0])
-                linear_model2 = SoftEMLPBlock(
-                    repout_list, repout_list, gnl=True, rpp_init=False, extend=True)
-                filter_model2 = TranslationNormalizer(repout_list[0])
-                linear_model3 = SoftEMLPLinear(
-                    repout_list, repout_list, rpp_init=False, extend=True)
-                filter_model3 = TranslationNormalizer(repout_list[0])
-                linear_model = nn.Sequential(
-                    [linear_model, filter_model, linear_model1, filter_model1,
-                     linear_model2, filter_model2, linear_model3, filter_model3])
-
-            elif version == 7:
-                G = (SE3(), RotationGroup(3), TranslationGroup(3))
-                linear_model = ExtendedSoftEMLP(dset.rep_in, dset.rep_out,
-                                                groups=G, num_layers=hidden_lyrs, ch=args.ch,
-                                                gnl=args.gatednonlinearity,
-                                                rpp_init=args.rpp_init,
-                                                extend=True)
-
-            if not hasattr(linear_model, "set_state"):
-                def set_state(self, idx):
-                    for i in range(len(self)):
-                        self[i].set_state(idx)
-                linear_model.set_state = types.MethodType(
-                    set_state, linear_model)
-            if not hasattr(linear_model, "perturb"):
-                def perturb(self, alpha):
-                    for i in range(len(self)):
-                        self[i].perturb(alpha)
-                linear_model.perturb = types.MethodType(perturb, linear_model)
-            if not hasattr(linear_model, "init_model"):
-                def init_model(self):
-                    for i in range(len(self)):
-                        self[i].init_model()
-                linear_model.init_model = types.MethodType(
-                    init_model, linear_model)
-            if not hasattr(linear_model, "letitbe"):
-                def letitbe(self, flag=True):
-                    for i in range(len(self)):
-                        self[i].letitbe(flag)
-                linear_model.letitbe = types.MethodType(letitbe, linear_model)
-
-            linear_model.letitbe()
-            print("extend", linear_model.extend)
-            for x, _ in trainloader:
-                for g in range(equivlength):
-                    linear_model.set_state(g)
-                    linear_model.perturb(0)
-                    if version != 7:
-                        error = model.equiv_error(g, x[:args.error_test_samples, :8],
-                                                  # error = model.equiv_error(g, x[:args.error_test_samples],
-                                                  args.n_transforms,
-                                                  forward=linear_model,
-                                                  rep_in_list=repin_list,
-                                                  rep_out_list=repout_list)
-                    else:
-                        error = model.equiv_error(g, x[:args.error_test_samples],
-                                                  args.n_transforms,
-                                                  forward=linear_model,
-                                                  rep_in_list=linear_model.rep_in_list,
-                                                  rep_out_list=linear_model.rep_out_list)
-                        # error = model.equiv_error(g, x[:args.error_test_samples],
-                        #                           args.n_transforms,
-                        #                           forward=linear_model.network[:-1],
-                        #                           rep_in_list=linear_model.rep_in_list,
-                        #                           rep_out_list=linear_model.rout_list[-1])
-                    print(f"equiv_error_g{g}: {error}")
-                    if g == 2:
-                        print("INPUT")
-                        print(x[:1])
-                        print("OUTPUT")
-                        output1 = linear_model(x[:1])
-                        # output1 = linear_model.network[:-1](x[:1])
-                        print(output1)
-                        print("INPUT+shift")
-                        x_t = x[:1]+jnp.array([[3., 1., 2.,
-                                                0., 3., 1., 2., 0., 3., 1., 2., 0.]])
-                        print(x_t)
-                        print("OUTPUT of INPUT+shift")
-                        output2 = linear_model(x_t)
-                        # output2 = linear_model.network[:-1](x_t)
-                        print(output2)
-                        if version != 7:
-                            print("correct translation?")
-                            translation = (output2-output1)/output1[0][11]
-                            print(translation[0][8:12])
-                            translation = (output2-output1)/output1[0][7]
-                            print(translation[0][4:8])
-                            translation = (output2-output1)/output1[0][3]
-                            print(translation[0][0:4])
-                        print(f"hypothesis model version: {version}")
-                linear_model.init_model()
-                linear_model.letitbe(False)
-                return
 
         top_mse = float('inf')
         top_ood_mse = float('inf')
@@ -1210,7 +975,6 @@ def main(args):
                 train_length += x.shape[0]
                 train_mse += _mse*x.shape[0]
                 train_loss += l*x.shape[0]
-            # train_mse /= lengths["train"]
             train_mse /= train_length
             train_loss /= train_length
 
@@ -1227,8 +991,6 @@ def main(args):
                 valid_length += x.shape[0]
                 valid_mse += l*x.shape[0]
                 ms.accumulate(x, y)
-            # valid_mse /= lengths["valid"]
-            # ms.end(lengths["valid"])
             valid_mse /= valid_length
             ms.end(valid_length)
             es.update(epoch, valid_mse)
@@ -1247,7 +1009,6 @@ def main(args):
                 ae.update_rglr(rglr1_list)
 
             if adjust_equiv_cond:
-                # equiv = adjust_equiv(rglr1_list, equiv)
                 equiv = ae.adjust(equiv, args.adjust_exp)
 
                 # measure test mse
@@ -1304,8 +1065,6 @@ def main(args):
         equiv_list.append(equiv)
         print(
             f"Trial {trial+1}, Test MSE: {top_test_mse:.3e} at {top_test_epoch}")
-        print(
-            f"Trial {trial+1}, OOD MSE: {top_ood_mse:.3e} at {top_test_epoch}")
 
     print("(checkpoint)")
     print("Symmetry type:", symmetry_type)
@@ -1370,13 +1129,9 @@ if __name__ == "__main__":
             "motion": 0.2
         }[dataset_name] if dataset_name != "motion" else {
             "symm_scale_aware": 5,
-            "inc_symm_scale_aware": 5,
             "symm_scale_aware2": 5,
-            "inc_symm_scale_aware2": 5,
             "scale_aware": 0.3,
-            "inc_scale_aware": 0.3,
             "symm_aware": 0.3,
-            "inc_symm_aware": 0.3,
         }[normal_type]
     )
     parser.add_argument(
@@ -1411,13 +1166,9 @@ if __name__ == "__main__":
             "motion": 500
         }[dataset_name] if dataset_name != "motion" else {
             "symm_scale_aware": 500,
-            "inc_symm_scale_aware": 500,
             "symm_scale_aware2": 500,
-            "inc_symm_scale_aware2": 500,
             "scale_aware": 750,
-            "inc_scale_aware": 750,
             "symm_aware": 500,
-            "inc_symm_aware": 500,
         }[normal_type]
     )
     parser.add_argument(
@@ -1443,7 +1194,6 @@ if __name__ == "__main__":
         "--ch",
         type=int,
         default={
-            # "inertia": 384,  # 270 for a half of parameters
             "inertia": 128,  # 89 for a half of parameters
             "cossim": 128,  # 90 for a half of parameters
             "motion": 384  # 269 for a half of parameters
@@ -1578,13 +1328,9 @@ if __name__ == "__main__":
             "motion": 5
         }[dataset_name] if dataset_name != "motion" else {
             "symm_scale_aware": 5,
-            "inc_symm_scale_aware": 5,
             "symm_scale_aware2": 5,
-            "inc_symm_scale_aware2": 5,
             "scale_aware": 5,
-            "inc_scale_aware": 5,
             "symm_aware": 5,
-            "inc_symm_aware": 5,
         }[normal_type]
     )
     parser.add_argument(
@@ -1648,11 +1394,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     args.dataset = dataset_name
-    # if dataset_name == "motion":
-    #     with jax.default_matmul_precision('float32'):
-    #         main(args)
-    # else:
-    #     main(args)
     if args.precision:
         with jax.default_matmul_precision('float32'):
             main(args)
