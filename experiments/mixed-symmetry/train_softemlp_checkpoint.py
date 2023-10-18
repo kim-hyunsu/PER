@@ -14,7 +14,7 @@ from datasets import ModifiedInertia, RandomlyModifiedInertia, SyntheticSE3Datas
 from models.objax_per import MLP, ExtendedSoftEMLP, SoftEMLP, RPP, MixedRPP, EMLP, TranslationNormalizer, SoftEMLPBlock
 # from emlp.nn.objax import EMLP
 from oil.datasetup.datasets import split_dataset
-from utils import LoaderTo
+from datasets import LoaderTo
 from torch.utils.data import DataLoader
 from emlp.groups import SO, O, Embed, Scaling, SL, GL, Z, S
 import emlp.reps as emlp_reps

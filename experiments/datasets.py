@@ -12,7 +12,11 @@ from functools import partial
 import itertools
 from jax import vmap, jit
 from objax import Module
+import functools
+from oil.utils.utils import imap
 
+def LoaderTo(loader):
+    return imap(functools.partial(minibatch_to),loader)
 
 @export
 class RandomlyModifiedInertia(Dataset, metaclass=Named):
